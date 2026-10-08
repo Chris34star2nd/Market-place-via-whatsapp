@@ -16,7 +16,7 @@ import { TIER_CONFIG, SITE_CONFIG, NAIROBI_AREAS } from '@/config';
 type Tab = 'overview' | 'listings' | 'orders' | 'subscription';
 
 export function SellerDashboardPage() {
-  const { user, profile, loading: authLoading } = useAuth();
+  const { user, profile, loading: authLoading, refreshProfile } = useAuth();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [listings, setListings] = useState<Listing[]>([]);
@@ -117,7 +117,7 @@ export function SellerDashboardPage() {
     if (error) {
       setFormError(error.message);
     } else {
-      await profile?.refreshProfile?.();
+      await refreshProfile();
       window.location.reload();
     }
   };
