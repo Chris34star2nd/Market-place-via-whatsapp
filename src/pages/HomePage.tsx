@@ -29,6 +29,7 @@ export function HomePage() {
         category:categories(*)
       `)
       .eq('status', 'active')
+      .order('tier_rank', { ascending: false })
       .order('is_featured', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(24);

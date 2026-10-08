@@ -8,6 +8,7 @@ import { ListingCardSkeleton } from '@/components/Skeleton';
 import { NAIROBI_AREAS } from '@/config';
 
 const SORT_OPTIONS = [
+  { value: 'best', label: 'Best Match (Top Sellers)' },
   { value: 'newest', label: 'Newest First' },
   { value: 'oldest', label: 'Oldest First' },
   { value: 'price_low', label: 'Price: Low to High' },
@@ -38,7 +39,7 @@ export function SearchPage() {
   const category = searchParams.get('category') || '';
   const location = searchParams.get('location') || '';
   const verifiedOnly = searchParams.get('verified') === 'true';
-  const sort = searchParams.get('sort') || 'newest';
+  const sort = searchParams.get('sort') || 'best';
   const priceRange = searchParams.get('priceRange') || '';
 
   useEffect(() => {
@@ -87,8 +88,11 @@ export function SearchPage() {
       case 'popular':
         query = query.order('views_count', { ascending: false });
         break;
+      case 'best':
+        query = query.order('tier_rank', { ascending: false }).order('is_featured', { ascending: false }).order('created_at', { ascending: false });
+        break;
       default:
-        query = query.order('is_featured', { ascending: false }).order('created_at', { ascending: false });
+        query = query.order('tier_rank', { ascending: false }).order('is_featured', { ascending: false }).order('created_at', { ascending: false });
     }
 
     query = query.range(page * pageSize, (page + 1) * pageSize - 1);

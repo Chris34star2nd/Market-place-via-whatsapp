@@ -50,6 +50,7 @@ export interface Listing {
   images: string[];
   status: ListingStatus;
   is_featured: boolean;
+  tier_rank: number;
   views_count: number;
   whatsapp_clicks: number;
   created_at: string;
