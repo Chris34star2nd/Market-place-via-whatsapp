@@ -300,8 +300,8 @@ export function AdminPage() {
           <h1 className="text-2xl font-bold">Admin Panel</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
             Super Admin · {adminSession.email}
-            {profile?.admin_roles && profile.admin_roles.length > 0 && (
-              <span className="ml-2">· {profile.admin_roles.map(r => r.role.display_name).join(', ')}</span>
+            {adminSession && (
+              <span className="ml-2">· Super Admin</span>
             )}
           </p>
         </div>
