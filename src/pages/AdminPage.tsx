@@ -14,11 +14,13 @@ import { VerificationBadge } from '@/components/VerificationBadge';
 type AdminTab = 'overview' | 'sellers' | 'listings' | 'reports' | 'payments' | 'tickets' | 'discounts' | 'roles' | 'audit' | 'email';
 
 export function AdminPage() {
-  const { adminSession, setAdminSession } = useAuth();
+  const { adminSession, adminSignIn, adminSignOut, sessionReady } = useAuth();
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [adminLoginForm, setAdminLoginForm] = useState({ email: '', password: '' });
   const [adminLoginError, setAdminLoginError] = useState<string | null>(null);
   const [adminLoggingIn, setAdminLoggingIn] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -31,7 +33,6 @@ export function AdminPage() {
   const [rolePerms, setRolePerms] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
 
-  const [selectedSeller, setSelectedSeller] = useState<Seller | null>(null);
   const [showEmailComposer, setShowEmailComposer] = useState(false);
   const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
   const [emailSent, setEmailSent] = useState(false);
@@ -76,22 +77,39 @@ export function AdminPage() {
   }, []);
 
   useEffect(() => {
-    if (adminSession) {
-      fetchData();
+    if (adminSession && sessionReady) {
+      supabase.auth.getSession().then(({ data }) => {
+        if (!data.session) {
+          supabase.auth.signInWithPassword({
+            email: adminSession.email,
+            password: adminSession.password,
+          }).then(() => {
+            fetchData();
+          });
+        } else {
+          fetchData();
+        }
+      });
     }
-  }, [adminSession, fetchData]);
+  }, [adminSession, sessionReady, fetchData]);
 
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAdminLoginError(null);
     setAdminLoggingIn(true);
-    const emailMatches = adminLoginForm.email.trim().toLowerCase() === SUPER_ADMIN_EMAIL.trim().toLowerCase();
+    const email = adminLoginForm.email.trim().toLowerCase();
+    const emailMatches = email === SUPER_ADMIN_EMAIL.trim().toLowerCase();
     const passwordMatches = adminLoginForm.password === SUPER_ADMIN_PASSWORD;
-    if (emailMatches && passwordMatches) {
-      setAdminSession({ email: adminLoginForm.email.trim().toLowerCase(), password: adminLoginForm.password });
-      setAdminLoginForm({ email: '', password: '' });
-    } else {
+    if (!emailMatches || !passwordMatches) {
       setAdminLoginError('Invalid email or password.');
+      setAdminLoggingIn(false);
+      return;
+    }
+    const { error } = await adminSignIn(email, adminLoginForm.password);
+    if (error) {
+      setAdminLoginError(error);
+    } else {
+      setAdminLoginForm({ email: '', password: '' });
     }
     setAdminLoggingIn(false);
   };
@@ -106,39 +124,55 @@ export function AdminPage() {
   };
 
   const handleBanSeller = async (seller: Seller) => {
-    await supabase.from('sellers').update({ is_banned: !seller.is_banned }).eq('id', seller.id);
+    setActionError(null);
+    const { error } = await supabase.from('sellers').update({ is_banned: !seller.is_banned }).eq('id', seller.id);
+    if (error) { setActionError(error.message); return; }
     await logAction(seller.is_banned ? 'unban_seller' : 'ban_seller', 'seller', seller.id);
+    setActionSuccess(seller.is_banned ? 'Seller unbanned' : 'Seller banned');
     fetchData();
   };
 
   const handleDeleteListing = async (id: string) => {
     if (!confirm('Delete this listing?')) return;
-    await supabase.from('listings').delete().eq('id', id);
+    setActionError(null);
+    const { error } = await supabase.from('listings').delete().eq('id', id);
+    if (error) { setActionError(error.message); return; }
     await logAction('delete_listing', 'listing', id);
+    setActionSuccess('Listing deleted');
     fetchData();
   };
 
   const handleResolveReport = async (id: string, status: string) => {
-    await supabase.from('reports').update({ status }).eq('id', id);
+    setActionError(null);
+    const { error } = await supabase.from('reports').update({ status }).eq('id', id);
+    if (error) { setActionError(error.message); return; }
     await logAction(`resolve_report_${status}`, 'report', id);
+    setActionSuccess(`Report ${status}`);
     fetchData();
   };
 
   const handleUpdateTier = async (seller: Seller, tier: string) => {
-    await supabase.from('sellers').update({ verification_tier: tier }).eq('id', seller.id);
+    setActionError(null);
+    const { error } = await supabase.from('sellers').update({ verification_tier: tier }).eq('id', seller.id);
+    if (error) { setActionError(error.message); return; }
     await logAction(`change_tier_${tier}`, 'seller', seller.id);
+    setActionSuccess(`${seller.business_name} moved to ${tier}`);
     fetchData();
   };
 
   const handleUpdateTicketStatus = async (id: string, status: string) => {
-    await supabase.from('support_tickets').update({ status }).eq('id', id);
+    setActionError(null);
+    const { error } = await supabase.from('support_tickets').update({ status }).eq('id', id);
+    if (error) { setActionError(error.message); return; }
     await logAction(`ticket_status_${status}`, 'ticket', id);
+    setActionSuccess('Ticket updated');
     fetchData();
   };
 
   const handleCreateDiscount = async (e: React.FormEvent) => {
     e.preventDefault();
-    await supabase.from('discount_codes').insert({
+    setActionError(null);
+    const { error } = await supabase.from('discount_codes').insert({
       code: discountForm.code.toUpperCase(),
       description: discountForm.description,
       discount_type: discountForm.discount_type,
@@ -146,40 +180,50 @@ export function AdminPage() {
       valid_until: discountForm.valid_until || null,
       is_active: true,
     });
+    if (error) { setActionError(error.message); return; }
     await logAction('create_discount', 'discount', discountForm.code);
     setShowAddDiscount(false);
     setDiscountForm({ code: '', description: '', discount_type: 'percentage', discount_value: '', valid_until: '' });
+    setActionSuccess('Discount code created');
     fetchData();
   };
 
   const handleToggleDiscount = async (d: DiscountCode) => {
-    await supabase.from('discount_codes').update({ is_active: !d.is_active }).eq('id', d.id);
+    setActionError(null);
+    const { error } = await supabase.from('discount_codes').update({ is_active: !d.is_active }).eq('id', d.id);
+    if (error) { setActionError(error.message); return; }
     fetchData();
   };
 
   const handleCreateRole = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { data } = await supabase.from('roles').insert({
+    setActionError(null);
+    const { data, error } = await supabase.from('roles').insert({
       name: roleForm.name.toLowerCase().replace(/\s+/g, '_'),
       display_name: roleForm.display_name,
       description: roleForm.description,
       is_system: false,
     }).select().single();
+    if (error) { setActionError(error.message); return; }
     if (data) {
       await logAction('create_role', 'role', data.id);
       setShowCreateRole(false);
       setRoleForm({ name: '', display_name: '', description: '' });
+      setActionSuccess('Role created');
       fetchData();
     }
   };
 
   const handleTogglePermission = async (roleId: string, permId: string) => {
+    setActionError(null);
     const current = rolePerms[roleId] || [];
+    let error;
     if (current.includes(permId)) {
-      await supabase.from('role_permissions').delete().eq('role_id', roleId).eq('permission_id', permId);
+      ({ error } = await supabase.from('role_permissions').delete().eq('role_id', roleId).eq('permission_id', permId));
     } else {
-      await supabase.from('role_permissions').insert({ role_id: roleId, permission_id: permId });
+      ({ error } = await supabase.from('role_permissions').insert({ role_id: roleId, permission_id: permId }));
     }
+    if (error) { setActionError(error.message); return; }
     fetchData();
   };
 
@@ -199,7 +243,7 @@ export function AdminPage() {
   };
 
   // Admin login gate — show email+password form if not logged in as admin
-  if (!adminSession) {
+  if (!adminSession && sessionReady) {
     return (
       <div className="min-h-[70vh] flex items-center justify-center px-4 py-12">
         <div className="max-w-md w-full">
@@ -292,20 +336,40 @@ export function AdminPage() {
 
   return (
     <div className="container-app py-6">
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center justify-between gap-3 mb-6">
+        <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-lg bg-primary-600 flex items-center justify-center">
           <Shield className="w-5 h-5 text-white" />
         </div>
         <div>
           <h1 className="text-2xl font-bold">Admin Panel</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            Super Admin · {adminSession.email}
-            {adminSession && (
-              <span className="ml-2">· Super Admin</span>
-            )}
+            Super Admin · {adminSession?.email}
           </p>
         </div>
+        </div>
+        <button
+          onClick={() => adminSignOut()}
+          className="btn-outline text-sm"
+          title="Sign out of admin"
+        >
+          <Lock className="w-4 h-4" />
+          Sign Out
+        </button>
       </div>
+
+      {actionError && (
+        <div className="bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-lg p-3 mb-4 text-sm text-error-700 dark:text-error-400 flex items-center justify-between">
+          <span>{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-error-400 hover:text-error-600"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+      {actionSuccess && (
+        <div className="bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-lg p-3 mb-4 text-sm text-primary-700 dark:text-primary-400 flex items-center justify-between">
+          <span>{actionSuccess}</span>
+          <button onClick={() => setActionSuccess(null)} className="text-primary-400 hover:text-primary-600"><X className="w-4 h-4" /></button>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -819,6 +883,39 @@ export function AdminPage() {
               </div>
               <p className="text-xs text-neutral-400">After creating the role, expand it to toggle permissions on/off.</p>
               <button type="submit" className="btn-primary w-full">Create Role</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Email Composer Modal */}
+      {showEmailComposer && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setShowEmailComposer(false)}>
+          <div className="bg-white dark:bg-neutral-900 rounded-xl max-w-lg w-full p-6 animate-scale-in" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Compose Email</h2>
+              <button onClick={() => setShowEmailComposer(false)} className="btn-ghost p-1"><X className="w-5 h-5" /></button>
+            </div>
+            <form onSubmit={handleSendEmail} className="space-y-4">
+              <div>
+                <label className="label">To</label>
+                <input required type="email" value={emailForm.to} onChange={(e) => setEmailForm({ ...emailForm, to: e.target.value })} className="input" placeholder="recipient@example.com" />
+              </div>
+              <div>
+                <label className="label">Subject</label>
+                <input required type="text" value={emailForm.subject} onChange={(e) => setEmailForm({ ...emailForm, subject: e.target.value })} className="input" placeholder="Email subject" />
+              </div>
+              <div>
+                <label className="label">Message</label>
+                <textarea required value={emailForm.body} onChange={(e) => setEmailForm({ ...emailForm, body: e.target.value })} className="input min-h-[160px]" placeholder="Type your message..." />
+              </div>
+              <button type="submit" disabled={emailSent} className="btn-primary w-full">
+                {emailSent ? (
+                  <><Check className="w-4 h-4" /> Sent!</>
+                ) : (
+                  <><Send className="w-4 h-4" /> Send Email</>
+                )}
+              </button>
             </form>
           </div>
         </div>

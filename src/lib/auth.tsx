@@ -28,11 +28,14 @@ interface AuthContextValue {
   session: Session | null;
   profile: AuthProfile | null;
   loading: boolean;
+  sessionReady: boolean;
   refreshProfile: () => Promise<void>;
   adminPasswordVerified: boolean;
   setAdminPasswordVerified: (v: boolean) => void;
   adminSession: AdminSession | null;
   setAdminSession: (s: AdminSession | null) => void;
+  adminSignIn: (email: string, password: string) => Promise<{ error: string | null }>;
+  adminSignOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -44,6 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionReady, setSessionReady] = useState(false);
   const [adminPasswordVerified, setAdminPasswordVerified] = useState(false);
   const [adminSession, setAdminSessionState] = useState<AdminSession | null>(() => {
     try {
@@ -61,6 +65,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       sessionStorage.removeItem('admin_session');
     }
+  };
+
+  const adminSignIn = async (email: string, password: string): Promise<{ error: string | null }> => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      return { error: error.message };
+    }
+    setAdminSession({ email, password });
+    return { error: null };
+  };
+
+  const adminSignOut = async () => {
+    await supabase.auth.signOut();
+    setAdminSession(null);
   };
 
   const loadProfile = async (email: string | undefined) => {
@@ -129,6 +147,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
+      setSessionReady(true);
       if (data.session?.user?.email) {
         loadProfile(data.session.user.email).finally(() => setLoading(false));
       } else {
@@ -138,7 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
-      setAdminPasswordVerified(false);
+      setSessionReady(true);
       if (newSession?.user?.email) {
         (async () => {
           await loadProfile(newSession.user.email);
@@ -159,11 +178,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session,
       profile,
       loading,
+      sessionReady,
       refreshProfile,
       adminPasswordVerified,
       setAdminPasswordVerified,
       adminSession,
       setAdminSession,
+      adminSignIn,
+      adminSignOut,
     }}>
       {children}
     </AuthContext.Provider>
