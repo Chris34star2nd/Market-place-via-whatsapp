@@ -6,7 +6,7 @@ import {
   Headphones, Ticket, Tag, Mail, Send, X, Plus, UserCog
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { useAuth, SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD } from '@/lib/auth';
+import { useAuth } from '@/lib/auth';
 import type { Seller, Listing, Report, Payment, AuditLog, SupportTicket, DiscountCode, Role, Permission } from '@/types';
 import { formatPrice, formatDateTime, formatNumber, timeAgo, formatDate } from '@/lib/utils';
 import { VerificationBadge } from '@/components/VerificationBadge';
@@ -80,31 +80,19 @@ export function AdminPage() {
     if (adminSession && sessionReady) {
       supabase.auth.getSession().then(({ data }) => {
         if (!data.session) {
-          supabase.auth.signInWithPassword({
-            email: adminSession.email,
-            password: adminSession.password,
-          }).then(() => {
-            fetchData();
-          });
+          adminSignOut();
         } else {
           fetchData();
         }
       });
     }
-  }, [adminSession, sessionReady, fetchData]);
+  }, [adminSession, sessionReady, fetchData, adminSignOut]);
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAdminLoginError(null);
     setAdminLoggingIn(true);
     const email = adminLoginForm.email.trim().toLowerCase();
-    const emailMatches = email === SUPER_ADMIN_EMAIL.trim().toLowerCase();
-    const passwordMatches = adminLoginForm.password === SUPER_ADMIN_PASSWORD;
-    if (!emailMatches || !passwordMatches) {
-      setAdminLoginError('Invalid email or password.');
-      setAdminLoggingIn(false);
-      return;
-    }
     const { error } = await adminSignIn(email, adminLoginForm.password);
     if (error) {
       setAdminLoginError(error);

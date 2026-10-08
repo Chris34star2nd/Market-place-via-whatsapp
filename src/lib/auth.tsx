@@ -20,7 +20,6 @@ interface AuthProfile {
 
 interface AdminSession {
   email: string;
-  password: string;
 }
 
 interface AuthContextValue {
@@ -41,7 +40,6 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 const SUPER_ADMIN_EMAIL = import.meta.env.VITE_SUPER_ADMIN_EMAIL || '';
-const SUPER_ADMIN_PASSWORD = import.meta.env.VITE_SUPER_ADMIN_PASSWORD || '';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -72,7 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) {
       return { error: error.message };
     }
-    setAdminSession({ email, password });
+    setAdminSession({ email });
     return { error: null };
   };
 
@@ -198,5 +196,5 @@ export function useAuth() {
   return ctx;
 }
 
-export { SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD };
+export { SUPER_ADMIN_EMAIL };
 export type { AdminSession };
