@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Shield, Users, Package, Flag, DollarSign, BarChart3, ScrollText,
-  AlertCircle, Eye, Trash2, Ban, Check, Crown, Lock,
-  Headphones, Ticket, Tag, Mail, Send, X, Plus, KeyRound, UserCog
+  AlertCircle, Trash2, Ban, Check, Crown, Lock,
+  Headphones, Ticket, Tag, Mail, Send, X, Plus, UserCog
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { useAuth, SUPER_ADMIN_PASSWORD } from '@/lib/auth';
+import { useAuth, SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD } from '@/lib/auth';
 import type { Seller, Listing, Report, Payment, AuditLog, SupportTicket, DiscountCode, Role, Permission } from '@/types';
 import { formatPrice, formatDateTime, formatNumber, timeAgo, formatDate } from '@/lib/utils';
 import { VerificationBadge } from '@/components/VerificationBadge';
@@ -14,9 +14,11 @@ import { VerificationBadge } from '@/components/VerificationBadge';
 type AdminTab = 'overview' | 'sellers' | 'listings' | 'reports' | 'payments' | 'tickets' | 'discounts' | 'roles' | 'audit' | 'email';
 
 export function AdminPage() {
-  const { user, profile, loading: authLoading, adminPasswordVerified, setAdminPasswordVerified } = useAuth();
-  const navigate = useNavigate();
+  const { adminSession, setAdminSession } = useAuth();
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const [adminLoginForm, setAdminLoginForm] = useState({ email: '', password: '' });
+  const [adminLoginError, setAdminLoginError] = useState<string | null>(null);
+  const [adminLoggingIn, setAdminLoggingIn] = useState(false);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -28,8 +30,7 @@ export function AdminPage() {
   const [allPermissions, setAllPermissions] = useState<Permission[]>([]);
   const [rolePerms, setRolePerms] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [passwordError, setPasswordError] = useState<string | null>(null);
+
   const [selectedSeller, setSelectedSeller] = useState<Seller | null>(null);
   const [showEmailComposer, setShowEmailComposer] = useState(false);
   const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
@@ -75,38 +76,29 @@ export function AdminPage() {
   }, []);
 
   useEffect(() => {
-    if (!authLoading) {
-      if (!user) {
-        navigate('/login');
-        return;
-      }
-      if (!profile?.is_admin) {
-        navigate('/');
-        return;
-      }
-      if (SUPER_ADMIN_PASSWORD && !adminPasswordVerified) {
-        return;
-      }
+    if (adminSession) {
       fetchData();
     }
-  }, [authLoading, user, profile, navigate, fetchData, adminPasswordVerified]);
+  }, [adminSession, fetchData]);
 
-  const handlePasswordSubmit = (e: React.FormEvent) => {
+  const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (passwordInput === SUPER_ADMIN_PASSWORD) {
-      setAdminPasswordVerified(true);
-      setPasswordError(null);
-      fetchData();
+    setAdminLoginError(null);
+    setAdminLoggingIn(true);
+    const emailMatches = adminLoginForm.email.trim().toLowerCase() === SUPER_ADMIN_EMAIL.trim().toLowerCase();
+    const passwordMatches = adminLoginForm.password === SUPER_ADMIN_PASSWORD;
+    if (emailMatches && passwordMatches) {
+      setAdminSession({ email: adminLoginForm.email.trim().toLowerCase(), password: adminLoginForm.password });
+      setAdminLoginForm({ email: '', password: '' });
     } else {
-      setPasswordError('Incorrect password. Access denied.');
+      setAdminLoginError('Invalid email or password.');
     }
+    setAdminLoggingIn(false);
   };
 
   const logAction = async (action: string, targetType: string, targetId: string) => {
-    if (!user) return;
     await supabase.from('audit_logs').insert({
-      actor_id: user.id,
-      actor_email: user.email,
+      actor_email: adminSession?.email || 'admin@sokohub.co.ke',
       action,
       target_type: targetType,
       target_id: targetId,
@@ -146,7 +138,6 @@ export function AdminPage() {
 
   const handleCreateDiscount = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) return;
     await supabase.from('discount_codes').insert({
       code: discountForm.code.toUpperCase(),
       description: discountForm.description,
@@ -154,7 +145,6 @@ export function AdminPage() {
       discount_value: parseFloat(discountForm.discount_value) || 0,
       valid_until: discountForm.valid_until || null,
       is_active: true,
-      created_by: user.id,
     });
     await logAction('create_discount', 'discount', discountForm.code);
     setShowAddDiscount(false);
@@ -208,51 +198,69 @@ export function AdminPage() {
     setShowEmailComposer(true);
   };
 
-  // Password gate
-  if (SUPER_ADMIN_PASSWORD && !adminPasswordVerified && profile?.is_admin) {
+  // Admin login gate — show email+password form if not logged in as admin
+  if (!adminSession) {
     return (
-      <div className="container-app py-16">
-        <div className="max-w-md mx-auto">
+      <div className="min-h-[70vh] flex items-center justify-center px-4 py-12">
+        <div className="max-w-md w-full">
           <div className="card p-8">
             <div className="text-center mb-6">
               <div className="w-14 h-14 rounded-2xl bg-primary-600 flex items-center justify-center mx-auto mb-4">
-                <Lock className="w-7 h-7 text-white" />
+                <Shield className="w-7 h-7 text-white" />
               </div>
-              <h1 className="text-xl font-bold">Admin Access</h1>
+              <h1 className="text-2xl font-bold">SokoHub Admin</h1>
               <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-2">
-                Enter the admin password to continue.
+                Sign in with your admin email and password to access the control panel.
               </p>
             </div>
-            {passwordError && (
+            {adminLoginError && (
               <div className="bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-lg p-3 mb-4 text-sm text-error-700 dark:text-error-400">
-                {passwordError}
+                {adminLoginError}
               </div>
             )}
-            <form onSubmit={handlePasswordSubmit} className="space-y-4">
+            <form onSubmit={handleAdminLogin} className="space-y-4">
               <div>
-                <label className="label">Admin Password</label>
+                <label className="label">Admin Email</label>
                 <input
                   required
-                  type="password"
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
+                  type="email"
+                  value={adminLoginForm.email}
+                  onChange={(e) => setAdminLoginForm({ ...adminLoginForm, email: e.target.value })}
                   className="input"
-                  placeholder="Enter password"
+                  placeholder="admin@sokohub.co.ke"
+                  autoComplete="email"
                   autoFocus
                 />
               </div>
-              <button type="submit" className="btn-primary w-full">
-                <KeyRound className="w-4 h-4" />
-                Unlock Admin Panel
+              <div>
+                <label className="label">Password</label>
+                <input
+                  required
+                  type="password"
+                  value={adminLoginForm.password}
+                  onChange={(e) => setAdminLoginForm({ ...adminLoginForm, password: e.target.value })}
+                  className="input"
+                  placeholder="Enter password"
+                  autoComplete="current-password"
+                />
+              </div>
+              <button type="submit" disabled={adminLoggingIn} className="btn-primary w-full">
+                <Lock className="w-4 h-4" />
+                {adminLoggingIn ? 'Signing in...' : 'Sign In to Admin'}
               </button>
             </form>
+            <div className="mt-6 pt-6 border-t border-neutral-100 dark:border-neutral-800 text-center">
+              <Link to="/" className="text-sm text-neutral-400 hover:text-primary-600">
+                Back to SokoHub
+              </Link>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  if (authLoading || loading) {
+  if (loading) {
     return (
       <div className="container-app py-6">
         <div className="skeleton h-8 w-48 mb-6" />
@@ -263,21 +271,11 @@ export function AdminPage() {
     );
   }
 
-  if (!profile?.is_admin) {
-    return (
-      <div className="container-app py-16 text-center">
-        <Shield className="w-12 h-12 text-neutral-300 mx-auto mb-3" />
-        <h1 className="text-xl font-bold">Access Denied</h1>
-        <p className="text-neutral-500 dark:text-neutral-400 mt-2">You need admin privileges to access this page.</p>
-      </div>
-    );
-  }
-
   const totalRevenue = payments.filter((p) => p.status === 'success').reduce((sum, p) => sum + p.amount, 0);
   const pendingReports = reports.filter((r) => r.status === 'pending');
   const openTickets = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress');
   const payingSellers = sellers.filter((s) => s.verification_tier !== 'unverified');
-  const isSuperAdmin = profile?.is_super_admin;
+  const isSuperAdmin = true;
 
   const TABS: { key: AdminTab; label: string; icon: typeof Shield; superOnly?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: BarChart3 },
@@ -301,7 +299,7 @@ export function AdminPage() {
         <div>
           <h1 className="text-2xl font-bold">Admin Panel</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            {isSuperAdmin ? 'Super Admin' : 'Admin'} · {user?.email}
+            Super Admin · {adminSession.email}
             {profile?.admin_roles && profile.admin_roles.length > 0 && (
               <span className="ml-2">· {profile.admin_roles.map(r => r.role.display_name).join(', ')}</span>
             )}
@@ -682,7 +680,7 @@ export function AdminPage() {
               <div>
                 <p className="font-medium text-sm text-primary-800 dark:text-primary-400">Super Admin Protection</p>
                 <p className="text-xs text-primary-700 dark:text-primary-500 mt-1">
-                  The Super Admin role has all permissions and cannot be deleted or demoted. The first Super Admin is set via the VITE_SUPER_ADMIN_EMAIL environment variable.
+                  The Super Admin role has all permissions and cannot be deleted or demoted.
                 </p>
               </div>
             </div>

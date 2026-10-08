@@ -18,6 +18,11 @@ interface AuthProfile {
   admin_permissions?: string[];
 }
 
+interface AdminSession {
+  email: string;
+  password: string;
+}
+
 interface AuthContextValue {
   user: Session['user'] | null;
   session: Session | null;
@@ -26,6 +31,8 @@ interface AuthContextValue {
   refreshProfile: () => Promise<void>;
   adminPasswordVerified: boolean;
   setAdminPasswordVerified: (v: boolean) => void;
+  adminSession: AdminSession | null;
+  setAdminSession: (s: AdminSession | null) => void;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -38,6 +45,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [adminPasswordVerified, setAdminPasswordVerified] = useState(false);
+  const [adminSession, setAdminSessionState] = useState<AdminSession | null>(() => {
+    try {
+      const stored = sessionStorage.getItem('admin_session');
+      return stored ? JSON.parse(stored) as AdminSession : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const setAdminSession = (s: AdminSession | null) => {
+    setAdminSessionState(s);
+    if (s) {
+      sessionStorage.setItem('admin_session', JSON.stringify(s));
+    } else {
+      sessionStorage.removeItem('admin_session');
+    }
+  };
 
   const loadProfile = async (email: string | undefined) => {
     if (!email) {
@@ -138,6 +162,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refreshProfile,
       adminPasswordVerified,
       setAdminPasswordVerified,
+      adminSession,
+      setAdminSession,
     }}>
       {children}
     </AuthContext.Provider>
@@ -151,3 +177,4 @@ export function useAuth() {
 }
 
 export { SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD };
+export type { AdminSession };
