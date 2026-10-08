@@ -1,16 +1,17 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Package, ShoppingBag, BarChart3, CreditCard,
+  LayoutDashboard, Package, ShoppingBag, CreditCard,
   Plus, Pencil, Trash2, Eye, EyeOff, X, AlertCircle, TrendingUp,
-  MessageCircle, DollarSign, PackageCheck, Clock, Check, XCircle
+  MessageCircle, DollarSign, Clock, Check, XCircle, Store,
+  BarChart3, ArrowUpRight, ArrowDownRight, ShoppingCart, Phone, Calendar
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import type { Listing, Order, Category } from '@/types';
-import { formatPrice, formatDate, timeAgo, formatNumber } from '@/lib/utils';
+import type { Listing, Order, Category, Seller } from '@/types';
+import { formatPrice, timeAgo, formatNumber, formatDate, slugify } from '@/lib/utils';
 import { VerificationBadge } from '@/components/VerificationBadge';
-import { TIER_CONFIG, SITE_CONFIG } from '@/config';
+import { TIER_CONFIG, SITE_CONFIG, NAIROBI_AREAS } from '@/config';
 
 type Tab = 'overview' | 'listings' | 'orders' | 'subscription';
 
@@ -21,9 +22,10 @@ export function SellerDashboardPage() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [sellerInfo, setSellerInfo] = useState<{ business_name: string; verification_tier: string } | null>(null);
+  const [sellerInfo, setSellerInfo] = useState<Seller | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showCreateProfile, setShowCreateProfile] = useState(false);
   const [editingListing, setEditingListing] = useState<Listing | null>(null);
   const [listingForm, setListingForm] = useState({
     title: '',
@@ -34,6 +36,13 @@ export function SellerDashboardPage() {
     location: 'Nairobi CBD',
     category_id: '',
     images: [''] as string[],
+  });
+  const [profileForm, setProfileForm] = useState({
+    business_name: '',
+    description: '',
+    whatsapp_number: '',
+    phone: '',
+    location: 'Nairobi CBD',
   });
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -48,13 +57,13 @@ export function SellerDashboardPage() {
       supabase.from('listings').select('*, category:categories(*)').eq('seller_id', profile.seller_id).order('created_at', { ascending: false }),
       supabase.from('orders').select('*, listing:listings(*)').eq('seller_id', profile.seller_id).order('created_at', { ascending: false }),
       supabase.from('categories').select('*').order('sort_order'),
-      supabase.from('sellers').select('business_name, verification_tier').eq('id', profile.seller_id).maybeSingle(),
+      supabase.from('sellers').select('*').eq('id', profile.seller_id).maybeSingle(),
     ]);
 
-    setListings(listingsRes.data || []);
-    setOrders(ordersRes.data || []);
+    setListings((listingsRes.data || []) as unknown as Listing[]);
+    setOrders((ordersRes.data || []) as unknown as Order[]);
     setCategories(catsRes.data || []);
-    setSellerInfo(sellerRes.data);
+    setSellerInfo(sellerRes.data as Seller | null);
     setLoading(false);
   }, [profile?.seller_id]);
 
@@ -69,11 +78,49 @@ export function SellerDashboardPage() {
   }, [authLoading, user, navigate, fetchData]);
 
   const activeListings = listings.filter((l) => l.status === 'active');
+  const pausedListings = listings.filter((l) => l.status === 'paused');
+  const soldListings = listings.filter((l) => l.status === 'sold');
   const totalViews = listings.reduce((sum, l) => sum + (l.views_count || 0), 0);
   const totalWhatsAppClicks = listings.reduce((sum, l) => sum + (l.whatsapp_clicks || 0), 0);
   const pendingOrders = orders.filter((o) => o.status === 'pending');
+  const completedOrders = orders.filter((o) => o.status === 'completed');
+  const confirmedOrders = orders.filter((o) => o.status === 'confirmed');
+  const totalOrderValue = orders.reduce((sum, o) => sum + (o.listing?.price || 0) * o.quantity, 0);
+  const conversionRate = totalViews > 0 ? ((orders.length / totalViews) * 100).toFixed(1) : '0';
+  const avgOrderValue = orders.length > 0 ? Math.round(totalOrderValue / orders.length) : 0;
+  const bestListing = listings.reduce((best, l) => (!best || (l.views_count || 0) > (best.views_count || 0)) ? l : best, null as Listing | null);
 
-  const tierConfig = sellerInfo ? TIER_CONFIG[sellerInfo.verification_tier as keyof typeof TIER_CONFIG] : TIER_CONFIG.unverified;
+  const tierConfig = sellerInfo ? TIER_CONFIG[sellerInfo.verification_tier] : TIER_CONFIG.unverified;
+
+  const handleCreateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.email) return;
+    setSubmitting(true);
+    setFormError(null);
+
+    const slug = slugify(profileForm.business_name) + '-' + Date.now().toString(36);
+
+    const { error } = await supabase.from('sellers').insert({
+      user_id: user.id,
+      business_name: profileForm.business_name,
+      slug,
+      description: profileForm.description,
+      whatsapp_number: profileForm.whatsapp_number,
+      phone: profileForm.phone,
+      email: user.email,
+      location: profileForm.location,
+      city: 'Nairobi',
+      verification_tier: 'unverified',
+    });
+
+    setSubmitting(false);
+    if (error) {
+      setFormError(error.message);
+    } else {
+      await profile?.refreshProfile?.();
+      window.location.reload();
+    }
+  };
 
   const handleSaveListing = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -93,7 +140,7 @@ export function SellerDashboardPage() {
       return;
     }
 
-    const slug = listingForm.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + Date.now().toString(36);
+    const slug = slugify(listingForm.title) + '-' + Date.now().toString(36);
 
     const data: Record<string, unknown> = {
       seller_id: profile.seller_id,
@@ -129,10 +176,7 @@ export function SellerDashboardPage() {
       setShowAddForm(false);
       setEditingListing(null);
       fetchData();
-      setListingForm({
-        title: '', description: '', price: '', type: 'product', condition: 'new',
-        location: 'Nairobi CBD', category_id: '', images: [''],
-      });
+      setListingForm({ title: '', description: '', price: '', type: 'product', condition: 'new', location: 'Nairobi CBD', category_id: '', images: [''] });
     }
   };
 
@@ -145,6 +189,11 @@ export function SellerDashboardPage() {
   const handleToggleListingStatus = async (listing: Listing) => {
     const newStatus = listing.status === 'active' ? 'paused' : 'active';
     await supabase.from('listings').update({ status: newStatus }).eq('id', listing.id);
+    fetchData();
+  };
+
+  const handleMarkSold = async (listing: Listing) => {
+    await supabase.from('listings').update({ status: 'sold' }).eq('id', listing.id);
     fetchData();
   };
 
@@ -179,13 +228,84 @@ export function SellerDashboardPage() {
     );
   }
 
-  if (!profile?.is_seller) {
+  if (!profile?.is_seller && !showCreateProfile) {
     return (
-      <div className="container-app py-16 text-center">
-        <AlertCircle className="w-12 h-12 text-neutral-300 mx-auto mb-3" />
-        <h1 className="text-xl font-bold">No seller account found</h1>
-        <p className="text-neutral-500 dark:text-neutral-400 mt-2">You need a seller account to access the dashboard.</p>
-        <Link to="/sell" className="btn-primary mt-4">Become a Seller</Link>
+      <div className="container-app py-16">
+        <div className="max-w-md mx-auto text-center">
+          <div className="w-16 h-16 rounded-2xl bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mx-auto mb-4">
+            <Store className="w-8 h-8 text-primary-600" />
+          </div>
+          <h1 className="text-xl font-bold">Become a Seller</h1>
+          <p className="text-neutral-500 dark:text-neutral-400 mt-2">
+            You don't have a seller profile yet. Create one to start listing products and receiving orders.
+          </p>
+          <button
+            onClick={() => setShowCreateProfile(true)}
+            className="btn-primary mt-4"
+          >
+            <Plus className="w-4 h-4" />
+            Create Seller Profile
+          </button>
+        </div>
+
+        {showCreateProfile && null}
+      </div>
+    );
+  }
+
+  if (showCreateProfile) {
+    return (
+      <div className="container-app py-8">
+        <div className="max-w-lg mx-auto">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-lg bg-primary-600 flex items-center justify-center">
+              <Store className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold">Create Seller Profile</h1>
+              <p className="text-sm text-neutral-500 dark:text-neutral-400">Set up your business to start selling</p>
+            </div>
+          </div>
+
+          {formError && (
+            <div className="bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-lg p-3 mb-4 text-sm text-error-700 dark:text-error-400">
+              {formError}
+            </div>
+          )}
+
+          <form onSubmit={handleCreateProfile} className="card p-6 space-y-4">
+            <div>
+              <label className="label">Business Name *</label>
+              <input required type="text" value={profileForm.business_name} onChange={(e) => setProfileForm({ ...profileForm, business_name: e.target.value })} className="input" placeholder="e.g. TechHub Nairobi" />
+            </div>
+            <div>
+              <label className="label">Description</label>
+              <textarea value={profileForm.description} onChange={(e) => setProfileForm({ ...profileForm, description: e.target.value })} className="input min-h-[80px]" placeholder="Tell buyers about your business..." />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">WhatsApp Number</label>
+                <input type="tel" value={profileForm.whatsapp_number} onChange={(e) => setProfileForm({ ...profileForm, whatsapp_number: e.target.value })} className="input" placeholder="+254712345678" />
+              </div>
+              <div>
+                <label className="label">Phone</label>
+                <input type="tel" value={profileForm.phone} onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })} className="input" placeholder="0712345678" />
+              </div>
+            </div>
+            <div>
+              <label className="label">Location</label>
+              <select value={profileForm.location} onChange={(e) => setProfileForm({ ...profileForm, location: e.target.value })} className="input">
+                {NAIROBI_AREAS.map((area) => <option key={area} value={area}>{area}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setShowCreateProfile(false)} className="btn-outline flex-1">Cancel</button>
+              <button type="submit" disabled={submitting} className="btn-primary flex-1">
+                {submitting ? 'Creating...' : 'Create Profile'}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     );
   }
@@ -197,7 +317,7 @@ export function SellerDashboardPage() {
           <h1 className="text-2xl font-bold">Seller Dashboard</h1>
           <div className="flex items-center gap-3 mt-1">
             <span className="text-sm text-neutral-500 dark:text-neutral-400">{sellerInfo?.business_name}</span>
-            {sellerInfo && <VerificationBadge tier={sellerInfo.verification_tier as 'unverified' | 'verified' | 'silver' | 'gold'} />}
+            {sellerInfo && <VerificationBadge tier={sellerInfo.verification_tier} />}
           </div>
         </div>
         <button
@@ -209,7 +329,7 @@ export function SellerDashboardPage() {
         </button>
       </div>
 
-      {/* Stats */}
+      {/* Stats Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div className="card p-4">
           <div className="flex items-center justify-between">
@@ -217,6 +337,10 @@ export function SellerDashboardPage() {
             <span className="text-2xl font-bold">{activeListings.length}</span>
           </div>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">Active Listings ({tierConfig.maxProducts === Infinity ? 'unlimited' : `max ${tierConfig.maxProducts}`})</p>
+          <div className="flex items-center gap-2 mt-2 text-xs">
+            <span className="text-amber-600 flex items-center gap-0.5"><Clock className="w-3 h-3" />{pausedListings.length} paused</span>
+            <span className="text-neutral-400 flex items-center gap-0.5"><Check className="w-3 h-3" />{soldListings.length} sold</span>
+          </div>
         </div>
         <div className="card p-4">
           <div className="flex items-center justify-between">
@@ -224,6 +348,10 @@ export function SellerDashboardPage() {
             <span className="text-2xl font-bold">{formatNumber(totalViews)}</span>
           </div>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">Total Views</p>
+          <div className="flex items-center gap-1 mt-2 text-xs text-primary-600">
+            <TrendingUp className="w-3 h-3" />
+            <span>{conversionRate}% conversion rate</span>
+          </div>
         </div>
         <div className="card p-4">
           <div className="flex items-center justify-between">
@@ -231,13 +359,20 @@ export function SellerDashboardPage() {
             <span className="text-2xl font-bold">{totalWhatsAppClicks}</span>
           </div>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">WhatsApp Clicks</p>
+          <div className="flex items-center gap-1 mt-2 text-xs text-neutral-400">
+            <span>{totalViews > 0 ? ((totalWhatsAppClicks / totalViews) * 100).toFixed(1) : 0}% of views</span>
+          </div>
         </div>
         <div className="card p-4">
           <div className="flex items-center justify-between">
             <ShoppingBag className="w-5 h-5 text-primary-600" />
-            <span className="text-2xl font-bold">{pendingOrders.length}</span>
+            <span className="text-2xl font-bold">{orders.length}</span>
           </div>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">Pending Orders</p>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">{pendingOrders.length} pending · {completedOrders.length} completed</p>
+          <div className="flex items-center gap-1 mt-2 text-xs text-neutral-400">
+            <DollarSign className="w-3 h-3" />
+            <span>Avg: {formatPrice(avgOrderValue)}</span>
+          </div>
         </div>
       </div>
 
@@ -262,6 +397,9 @@ export function SellerDashboardPage() {
             >
               <Icon className="w-4 h-4" />
               {tab.label}
+              {tab.key === 'orders' && pendingOrders.length > 0 && (
+                <span className="badge bg-error-500 text-white">{pendingOrders.length}</span>
+              )}
             </button>
           );
         })}
@@ -270,21 +408,98 @@ export function SellerDashboardPage() {
       {/* Overview Tab */}
       {activeTab === 'overview' && (
         <div className="space-y-6">
-          <div className="card p-6">
-            <h2 className="font-semibold mb-4">Recent Activity</h2>
+          {/* Performance Summary */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="card p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <BarChart3 className="w-4 h-4 text-primary-600" />
+                <h3 className="font-semibold text-sm">Revenue</h3>
+              </div>
+              <p className="text-2xl font-bold text-primary-600">{formatPrice(totalOrderValue)}</p>
+              <p className="text-xs text-neutral-400 mt-1">From {orders.length} orders</p>
+            </div>
+            <div className="card p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <TrendingUp className="w-4 h-4 text-primary-600" />
+                <h3 className="font-semibold text-sm">Engagement</h3>
+              </div>
+              <p className="text-2xl font-bold">{formatNumber(totalViews + totalWhatsAppClicks)}</p>
+              <p className="text-xs text-neutral-400 mt-1">Views + WhatsApp clicks</p>
+            </div>
+            <div className="card p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <ShoppingCart className="w-4 h-4 text-primary-600" />
+                <h3 className="font-semibold text-sm">Order Pipeline</h3>
+              </div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between"><span className="text-amber-600">Pending</span><span className="font-semibold">{pendingOrders.length}</span></div>
+                <div className="flex justify-between"><span className="text-blue-600">Confirmed</span><span className="font-semibold">{confirmedOrders.length}</span></div>
+                <div className="flex justify-between"><span className="text-primary-600">Completed</span><span className="font-semibold">{completedOrders.length}</span></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Best Performing Listing */}
+          {bestListing && (
+            <div className="card p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <TrendingUp className="w-4 h-4 text-primary-600" />
+                <h3 className="font-semibold text-sm">Best Performing Listing</h3>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-lg overflow-hidden bg-neutral-100 dark:bg-neutral-800 flex-shrink-0">
+                  {bestListing.images?.[0] && <img src={bestListing.images[0]} alt="" className="w-full h-full object-cover" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <Link to={`/listing/${bestListing.slug}`} className="font-medium text-sm hover:text-primary-600 truncate block">{bestListing.title}</Link>
+                  <div className="flex items-center gap-4 mt-1 text-xs text-neutral-500">
+                    <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{formatNumber(bestListing.views_count)} views</span>
+                    <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" />{bestListing.whatsapp_clicks} clicks</span>
+                    <span>{formatPrice(bestListing.price)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Recent Orders */}
+          <div className="card p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-sm">Recent Orders</h3>
+              <button onClick={() => setActiveTab('orders')} className="text-xs text-primary-600 hover:underline">View all</button>
+            </div>
             {orders.slice(0, 5).map((order) => (
               <div key={order.id} className="flex items-center justify-between py-3 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
                 <div className="min-w-0">
                   <p className="text-sm font-medium truncate">{order.listing?.title}</p>
                   <p className="text-xs text-neutral-500">{order.buyer_name} · {timeAgo(order.created_at)}</p>
                 </div>
-                <span className={`badge ${order.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'}`}>
-                  {order.status}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold">{formatPrice((order.listing?.price || 0) * order.quantity)}</span>
+                  <span className={`badge ${order.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : order.status === 'completed' ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' : 'bg-neutral-100 text-neutral-500'}`}>{order.status}</span>
+                </div>
               </div>
             ))}
             {orders.length === 0 && (
               <p className="text-sm text-neutral-500 dark:text-neutral-400 text-center py-6">No orders yet</p>
+            )}
+          </div>
+
+          {/* Top Listings by Views */}
+          <div className="card p-5">
+            <h3 className="font-semibold text-sm mb-4">Top Listings by Views</h3>
+            {[...listings].sort((a, b) => (b.views_count || 0) - (a.views_count || 0)).slice(0, 5).map((listing, i) => (
+              <div key={listing.id} className="flex items-center gap-3 py-2 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                <span className="text-xs font-bold text-neutral-400 w-5">#{i + 1}</span>
+                <div className="w-8 h-8 rounded overflow-hidden bg-neutral-100 dark:bg-neutral-800 flex-shrink-0">
+                  {listing.images?.[0] && <img src={listing.images[0]} alt="" className="w-full h-full object-cover" />}
+                </div>
+                <Link to={`/listing/${listing.slug}`} className="text-sm hover:text-primary-600 truncate flex-1 min-w-0">{listing.title}</Link>
+                <span className="text-xs text-neutral-500 flex items-center gap-1"><Eye className="w-3 h-3" />{formatNumber(listing.views_count)}</span>
+              </div>
+            ))}
+            {listings.length === 0 && (
+              <p className="text-sm text-neutral-500 text-center py-4">No listings yet</p>
             )}
           </div>
         </div>
@@ -309,6 +524,7 @@ export function SellerDashboardPage() {
                   <div className="flex items-center gap-3 mt-1 text-xs text-neutral-500">
                     <span>{formatPrice(listing.price)}</span>
                     <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{listing.views_count}</span>
+                    <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" />{listing.whatsapp_clicks}</span>
                     <span className={`badge ${
                       listing.status === 'active' ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' :
                       listing.status === 'sold' ? 'bg-neutral-100 text-neutral-500' :
@@ -320,6 +536,11 @@ export function SellerDashboardPage() {
                   <button onClick={() => handleToggleListingStatus(listing)} className="btn-ghost p-2" title={listing.status === 'active' ? 'Pause' : 'Activate'}>
                     {listing.status === 'active' ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
+                  {listing.status !== 'sold' && (
+                    <button onClick={() => handleMarkSold(listing)} className="btn-ghost p-2 text-primary-600" title="Mark as Sold">
+                      <Check className="w-4 h-4" />
+                    </button>
+                  )}
                   <button onClick={() => openEditForm(listing)} className="btn-ghost p-2" title="Edit">
                     <Pencil className="w-4 h-4" />
                   </button>
@@ -348,10 +569,12 @@ export function SellerDashboardPage() {
                   <div className="flex-1">
                     <p className="font-medium text-sm">{order.listing?.title}</p>
                     <div className="grid grid-cols-2 gap-2 mt-3 text-xs text-neutral-600 dark:text-neutral-400">
-                      <span><strong>Buyer:</strong> {order.buyer_name}</span>
-                      <span><strong>Phone:</strong> {order.buyer_phone}</span>
+                      <span className="flex items-center gap-1"><ShoppingBag className="w-3 h-3" /> <strong>Buyer:</strong> {order.buyer_name}</span>
+                      <span className="flex items-center gap-1"><Phone className="w-3 h-3" /> <strong>Phone:</strong> {order.buyer_phone}</span>
                       <span><strong>Qty:</strong> {order.quantity}</span>
                       <span><strong>Type:</strong> {order.order_type}</span>
+                      <span><strong>Value:</strong> {formatPrice((order.listing?.price || 0) * order.quantity)}</span>
+                      <span><strong>Date:</strong> {formatDate(order.created_at)}</span>
                       {order.delivery_notes && <span className="col-span-2"><strong>Notes:</strong> {order.delivery_notes}</span>}
                     </div>
                   </div>
@@ -368,10 +591,18 @@ export function SellerDashboardPage() {
                         <button onClick={() => handleUpdateOrderStatus(order.id, 'confirmed')} className="btn-ghost p-1.5 text-primary-600" title="Confirm">
                           <Check className="w-4 h-4" />
                         </button>
+                        <button onClick={() => handleUpdateOrderStatus(order.id, 'completed')} className="btn-ghost p-1.5 text-blue-600" title="Mark Completed">
+                          <Check className="w-4 h-4" />
+                        </button>
                         <button onClick={() => handleUpdateOrderStatus(order.id, 'cancelled')} className="btn-ghost p-1.5 text-error-600" title="Cancel">
                           <XCircle className="w-4 h-4" />
                         </button>
                       </div>
+                    )}
+                    {order.status === 'confirmed' && (
+                      <button onClick={() => handleUpdateOrderStatus(order.id, 'completed')} className="btn-ghost p-1.5 text-primary-600 text-xs">
+                        Mark Completed
+                      </button>
                     )}
                   </div>
                 </div>
@@ -387,15 +618,29 @@ export function SellerDashboardPage() {
           <div className="card p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold">Current Plan</h2>
-              {sellerInfo && <VerificationBadge tier={sellerInfo.verification_tier as 'unverified' | 'verified' | 'silver' | 'gold'} size="md" />}
+              {sellerInfo && <VerificationBadge tier={sellerInfo.verification_tier} size="md" />}
             </div>
             <p className="text-sm text-neutral-600 dark:text-neutral-400">
               You are on the <strong>{tierConfig.label}</strong> plan. This allows up to {tierConfig.maxProducts === Infinity ? 'unlimited' : tierConfig.maxProducts} product listings.
             </p>
+            <div className="mt-4 grid grid-cols-3 gap-4">
+              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold">{activeListings.length}</p>
+                <p className="text-xs text-neutral-500">Active</p>
+              </div>
+              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold">{tierConfig.maxProducts === Infinity ? '∞' : tierConfig.maxProducts}</p>
+                <p className="text-xs text-neutral-500">Limit</p>
+              </div>
+              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold">{tierConfig.maxProducts === Infinity ? '∞' : Math.max(0, tierConfig.maxProducts - activeListings.length)}</p>
+                <p className="text-xs text-neutral-500">Remaining</p>
+              </div>
+            </div>
             {sellerInfo?.verification_tier === 'unverified' && (
               <div className="mt-4 bg-primary-50 dark:bg-primary-900/20 rounded-lg p-4">
                 <p className="text-sm text-primary-700 dark:text-primary-400 font-medium">Upgrade to get verified and sell more!</p>
-                <p className="text-xs text-primary-600 dark:text-primary-500 mt-1">Plans start at KSh 350/month.</p>
+                <p className="text-xs text-primary-600 dark:text-primary-500 mt-1">Plans start at {SITE_CONFIG.currency} 350/month.</p>
               </div>
             )}
           </div>
@@ -409,10 +654,7 @@ export function SellerDashboardPage() {
                   <VerificationBadge tier={tier} size="md" />
                   <p className="text-2xl font-bold mt-3">{SITE_CONFIG.currency} {config.monthlyPrice.toLocaleString()}<span className="text-sm font-normal text-neutral-500">/mo</span></p>
                   <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-2">Up to {config.maxProducts === Infinity ? 'unlimited' : config.maxProducts} products</p>
-                  <button
-                    disabled={isCurrent}
-                    className={`btn-primary w-full mt-4 ${isCurrent ? 'opacity-50 cursor-default' : ''}`}
-                  >
+                  <button disabled={isCurrent} className={`btn-primary w-full mt-4 ${isCurrent ? 'opacity-50 cursor-default' : ''}`}>
                     {isCurrent ? 'Current Plan' : `Upgrade to ${config.label}`}
                   </button>
                 </div>
@@ -475,7 +717,9 @@ export function SellerDashboardPage() {
                 </div>
                 <div>
                   <label className="label">Location</label>
-                  <input type="text" value={listingForm.location} onChange={(e) => setListingForm({ ...listingForm, location: e.target.value })} className="input" />
+                  <select value={listingForm.location} onChange={(e) => setListingForm({ ...listingForm, location: e.target.value })} className="input">
+                    {NAIROBI_AREAS.map((area) => <option key={area} value={area}>{area}</option>)}
+                  </select>
                 </div>
               </div>
               <div>
@@ -490,17 +734,7 @@ export function SellerDashboardPage() {
                 <p className="text-xs text-neutral-400 mb-2">Paste direct image URLs. In production, images upload to Cloudinary.</p>
                 {listingForm.images.map((url, i) => (
                   <div key={i} className="flex gap-2 mb-2">
-                    <input
-                      type="url"
-                      value={url}
-                      onChange={(e) => {
-                        const images = [...listingForm.images];
-                        images[i] = e.target.value;
-                        setListingForm({ ...listingForm, images });
-                      }}
-                      className="input"
-                      placeholder="https://..."
-                    />
+                    <input type="url" value={url} onChange={(e) => { const images = [...listingForm.images]; images[i] = e.target.value; setListingForm({ ...listingForm, images }); }} className="input" placeholder="https://..." />
                     {listingForm.images.length > 1 && (
                       <button type="button" onClick={() => setListingForm({ ...listingForm, images: listingForm.images.filter((_, idx) => idx !== i) })} className="btn-ghost p-2">
                         <X className="w-4 h-4" />

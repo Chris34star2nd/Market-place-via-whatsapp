@@ -2,18 +2,19 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   Shield, Users, Package, Flag, DollarSign, BarChart3, ScrollText,
-  AlertCircle, TrendingUp, Eye, Trash2, Ban, Check, Crown,
+  AlertCircle, Eye, Trash2, Ban, Check, Crown, Lock,
+  Headphones, Ticket, Tag, Mail, Send, X, Plus, KeyRound, UserCog
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/lib/auth';
-import type { Seller, Listing, Report, Payment, AuditLog } from '@/types';
-import { formatPrice, formatDateTime, formatNumber, timeAgo } from '@/lib/utils';
+import { useAuth, SUPER_ADMIN_PASSWORD } from '@/lib/auth';
+import type { Seller, Listing, Report, Payment, AuditLog, SupportTicket, DiscountCode, Role, Permission } from '@/types';
+import { formatPrice, formatDateTime, formatNumber, timeAgo, formatDate } from '@/lib/utils';
 import { VerificationBadge } from '@/components/VerificationBadge';
 
-type AdminTab = 'overview' | 'sellers' | 'listings' | 'reports' | 'payments' | 'audit';
+type AdminTab = 'overview' | 'sellers' | 'listings' | 'reports' | 'payments' | 'tickets' | 'discounts' | 'roles' | 'audit' | 'email';
 
 export function AdminPage() {
-  const { user, profile, loading: authLoading } = useAuth();
+  const { user, profile, loading: authLoading, adminPasswordVerified, setAdminPasswordVerified } = useAuth();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [sellers, setSellers] = useState<Seller[]>([]);
@@ -21,15 +22,35 @@ export function AdminPage() {
   const [reports, setReports] = useState<Report[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [discounts, setDiscounts] = useState<DiscountCode[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [allPermissions, setAllPermissions] = useState<Permission[]>([]);
+  const [rolePerms, setRolePerms] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [selectedSeller, setSelectedSeller] = useState<Seller | null>(null);
+  const [showEmailComposer, setShowEmailComposer] = useState(false);
+  const [emailForm, setEmailForm] = useState({ to: '', subject: '', body: '' });
+  const [emailSent, setEmailSent] = useState(false);
+  const [showAddDiscount, setShowAddDiscount] = useState(false);
+  const [discountForm, setDiscountForm] = useState({ code: '', description: '', discount_type: 'percentage', discount_value: '', valid_until: '' });
+  const [showCreateRole, setShowCreateRole] = useState(false);
+  const [roleForm, setRoleForm] = useState({ name: '', display_name: '', description: '' });
+  const [expandedRole, setExpandedRole] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
-    const [sellersRes, listingsRes, reportsRes, paymentsRes, auditRes] = await Promise.all([
+    const [sellersRes, listingsRes, reportsRes, paymentsRes, auditRes, ticketsRes, discountsRes, rolesRes, permsRes] = await Promise.all([
       supabase.from('sellers').select('*').order('created_at', { ascending: false }),
       supabase.from('listings').select('*, seller:sellers(*)').order('created_at', { ascending: false }).limit(50),
       supabase.from('reports').select('*, listing:listings(*)').order('created_at', { ascending: false }),
       supabase.from('payments').select('*').order('created_at', { ascending: false }).limit(50),
       supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(50),
+      supabase.from('support_tickets').select('*').order('created_at', { ascending: false }),
+      supabase.from('discount_codes').select('*').order('created_at', { ascending: false }),
+      supabase.from('roles').select('*').order('created_at', { ascending: true }),
+      supabase.from('permissions').select('*').order('category', { ascending: true }),
     ]);
 
     setSellers(sellersRes.data || []);
@@ -37,6 +58,19 @@ export function AdminPage() {
     setReports(reportsRes.data || []);
     setPayments(paymentsRes.data || []);
     setAuditLogs(auditRes.data || []);
+    setTickets(ticketsRes.data || []);
+    setDiscounts(discountsRes.data || []);
+    setRoles(rolesRes.data || []);
+    setAllPermissions(permsRes.data || []);
+
+    // Load role-permission mappings
+    const { data: rpData } = await supabase.from('role_permissions').select('role_id, permission_id');
+    const rpMap: Record<string, string[]> = {};
+    (rpData || []).forEach((rp) => {
+      if (!rpMap[rp.role_id]) rpMap[rp.role_id] = [];
+      rpMap[rp.role_id].push(rp.permission_id);
+    });
+    setRolePerms(rpMap);
     setLoading(false);
   }, []);
 
@@ -50,9 +84,23 @@ export function AdminPage() {
         navigate('/');
         return;
       }
+      if (SUPER_ADMIN_PASSWORD && !adminPasswordVerified) {
+        return;
+      }
       fetchData();
     }
-  }, [authLoading, user, profile, navigate, fetchData]);
+  }, [authLoading, user, profile, navigate, fetchData, adminPasswordVerified]);
+
+  const handlePasswordSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (passwordInput === SUPER_ADMIN_PASSWORD) {
+      setAdminPasswordVerified(true);
+      setPasswordError(null);
+      fetchData();
+    } else {
+      setPasswordError('Incorrect password. Access denied.');
+    }
+  };
 
   const logAction = async (action: string, targetType: string, targetId: string) => {
     if (!user) return;
@@ -90,6 +138,120 @@ export function AdminPage() {
     fetchData();
   };
 
+  const handleUpdateTicketStatus = async (id: string, status: string) => {
+    await supabase.from('support_tickets').update({ status }).eq('id', id);
+    await logAction(`ticket_status_${status}`, 'ticket', id);
+    fetchData();
+  };
+
+  const handleCreateDiscount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    await supabase.from('discount_codes').insert({
+      code: discountForm.code.toUpperCase(),
+      description: discountForm.description,
+      discount_type: discountForm.discount_type,
+      discount_value: parseFloat(discountForm.discount_value) || 0,
+      valid_until: discountForm.valid_until || null,
+      is_active: true,
+      created_by: user.id,
+    });
+    await logAction('create_discount', 'discount', discountForm.code);
+    setShowAddDiscount(false);
+    setDiscountForm({ code: '', description: '', discount_type: 'percentage', discount_value: '', valid_until: '' });
+    fetchData();
+  };
+
+  const handleToggleDiscount = async (d: DiscountCode) => {
+    await supabase.from('discount_codes').update({ is_active: !d.is_active }).eq('id', d.id);
+    fetchData();
+  };
+
+  const handleCreateRole = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { data } = await supabase.from('roles').insert({
+      name: roleForm.name.toLowerCase().replace(/\s+/g, '_'),
+      display_name: roleForm.display_name,
+      description: roleForm.description,
+      is_system: false,
+    }).select().single();
+    if (data) {
+      await logAction('create_role', 'role', data.id);
+      setShowCreateRole(false);
+      setRoleForm({ name: '', display_name: '', description: '' });
+      fetchData();
+    }
+  };
+
+  const handleTogglePermission = async (roleId: string, permId: string) => {
+    const current = rolePerms[roleId] || [];
+    if (current.includes(permId)) {
+      await supabase.from('role_permissions').delete().eq('role_id', roleId).eq('permission_id', permId);
+    } else {
+      await supabase.from('role_permissions').insert({ role_id: roleId, permission_id: permId });
+    }
+    fetchData();
+  };
+
+  const handleSendEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEmailSent(true);
+    setTimeout(() => {
+      setShowEmailComposer(false);
+      setEmailSent(false);
+      setEmailForm({ to: '', subject: '', body: '' });
+    }, 1500);
+  };
+
+  const openEmailComposer = (to: string) => {
+    setEmailForm({ to, subject: '', body: '' });
+    setShowEmailComposer(true);
+  };
+
+  // Password gate
+  if (SUPER_ADMIN_PASSWORD && !adminPasswordVerified && profile?.is_admin) {
+    return (
+      <div className="container-app py-16">
+        <div className="max-w-md mx-auto">
+          <div className="card p-8">
+            <div className="text-center mb-6">
+              <div className="w-14 h-14 rounded-2xl bg-primary-600 flex items-center justify-center mx-auto mb-4">
+                <Lock className="w-7 h-7 text-white" />
+              </div>
+              <h1 className="text-xl font-bold">Admin Access</h1>
+              <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-2">
+                Enter the admin password to continue.
+              </p>
+            </div>
+            {passwordError && (
+              <div className="bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-lg p-3 mb-4 text-sm text-error-700 dark:text-error-400">
+                {passwordError}
+              </div>
+            )}
+            <form onSubmit={handlePasswordSubmit} className="space-y-4">
+              <div>
+                <label className="label">Admin Password</label>
+                <input
+                  required
+                  type="password"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  className="input"
+                  placeholder="Enter password"
+                  autoFocus
+                />
+              </div>
+              <button type="submit" className="btn-primary w-full">
+                <KeyRound className="w-4 h-4" />
+                Unlock Admin Panel
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (authLoading || loading) {
     return (
       <div className="container-app py-6">
@@ -113,6 +275,22 @@ export function AdminPage() {
 
   const totalRevenue = payments.filter((p) => p.status === 'success').reduce((sum, p) => sum + p.amount, 0);
   const pendingReports = reports.filter((r) => r.status === 'pending');
+  const openTickets = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress');
+  const payingSellers = sellers.filter((s) => s.verification_tier !== 'unverified');
+  const isSuperAdmin = profile?.is_super_admin;
+
+  const TABS: { key: AdminTab; label: string; icon: typeof Shield; superOnly?: boolean }[] = [
+    { key: 'overview', label: 'Overview', icon: BarChart3 },
+    { key: 'sellers', label: 'Sellers', icon: Users },
+    { key: 'listings', label: 'Listings', icon: Package },
+    { key: 'reports', label: 'Reports', icon: Flag },
+    { key: 'tickets', label: 'Support', icon: Headphones },
+    { key: 'payments', label: 'Payments', icon: DollarSign },
+    { key: 'discounts', label: 'Discounts', icon: Tag },
+    { key: 'email', label: 'Send Email', icon: Mail },
+    { key: 'roles', label: 'Roles', icon: UserCog, superOnly: true },
+    { key: 'audit', label: 'Audit Log', icon: ScrollText },
+  ];
 
   return (
     <div className="container-app py-6">
@@ -122,7 +300,12 @@ export function AdminPage() {
         </div>
         <div>
           <h1 className="text-2xl font-bold">Admin Panel</h1>
-          <p className="text-sm text-neutral-500 dark:text-neutral-400">Super Admin · {user?.email}</p>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">
+            {isSuperAdmin ? 'Super Admin' : 'Admin'} · {user?.email}
+            {profile?.admin_roles && profile.admin_roles.length > 0 && (
+              <span className="ml-2">· {profile.admin_roles.map(r => r.role.display_name).join(', ')}</span>
+            )}
+          </p>
         </div>
       </div>
 
@@ -133,7 +316,7 @@ export function AdminPage() {
             <Users className="w-5 h-5 text-primary-600" />
             <span className="text-2xl font-bold">{sellers.length}</span>
           </div>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">Total Sellers</p>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">Total Sellers · {payingSellers.length} paying</p>
         </div>
         <div className="card p-4">
           <div className="flex items-center justify-between">
@@ -151,28 +334,21 @@ export function AdminPage() {
         </div>
         <div className="card p-4">
           <div className="flex items-center justify-between">
-            <Flag className="w-5 h-5 text-primary-600" />
-            <span className="text-2xl font-bold">{pendingReports.length}</span>
+            <Headphones className="w-5 h-5 text-primary-600" />
+            <span className="text-2xl font-bold">{openTickets.length}</span>
           </div>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">Pending Reports</p>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-2">Open Tickets · {pendingReports.length} reports</p>
         </div>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 overflow-x-auto">
-        {[
-          { key: 'overview', label: 'Overview', icon: BarChart3 },
-          { key: 'sellers', label: 'Sellers', icon: Users },
-          { key: 'listings', label: 'Listings', icon: Package },
-          { key: 'reports', label: 'Reports', icon: Flag },
-          { key: 'payments', label: 'Payments', icon: DollarSign },
-          { key: 'audit', label: 'Audit Log', icon: ScrollText },
-        ].map((tab) => {
+        {TABS.filter(t => !t.superOnly || isSuperAdmin).map((tab) => {
           const Icon = tab.icon;
           return (
             <button
               key={tab.key}
-              onClick={() => setActiveTab(tab.key as AdminTab)}
+              onClick={() => setActiveTab(tab.key)}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
                 activeTab === tab.key
                   ? 'bg-primary-600 text-white'
@@ -183,6 +359,9 @@ export function AdminPage() {
               {tab.label}
               {tab.key === 'reports' && pendingReports.length > 0 && (
                 <span className="badge bg-error-500 text-white">{pendingReports.length}</span>
+              )}
+              {tab.key === 'tickets' && openTickets.length > 0 && (
+                <span className="badge bg-error-500 text-white">{openTickets.length}</span>
               )}
             </button>
           );
@@ -197,9 +376,7 @@ export function AdminPage() {
             <div className="space-y-3">
               {(['gold', 'silver', 'verified'] as const).map((tier) => {
                 const tierSellers = sellers.filter((s) => s.verification_tier === tier);
-                const tierRevenue = payments
-                  .filter((p) => p.status === 'success' && tierSellers.some((s) => s.id === p.seller_id))
-                  .reduce((sum, p) => sum + p.amount, 0);
+                const tierRevenue = payments.filter((p) => p.status === 'success' && tierSellers.some((s) => s.id === p.seller_id)).reduce((sum, p) => sum + p.amount, 0);
                 const maxRevenue = totalRevenue || 1;
                 return (
                   <div key={tier}>
@@ -211,12 +388,7 @@ export function AdminPage() {
                       <span className="font-semibold">{formatPrice(tierRevenue)}</span>
                     </div>
                     <div className="h-2 bg-neutral-100 dark:bg-neutral-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${
-                          tier === 'gold' ? 'bg-amber-500' : tier === 'silver' ? 'bg-slate-400' : 'bg-blue-500'
-                        }`}
-                        style={{ width: `${(tierRevenue / maxRevenue) * 100}%` }}
-                      />
+                      <div className={`h-full rounded-full ${tier === 'gold' ? 'bg-amber-500' : tier === 'silver' ? 'bg-slate-400' : 'bg-blue-500'}`} style={{ width: `${(tierRevenue / maxRevenue) * 100}%` }} />
                     </div>
                   </div>
                 );
@@ -224,19 +396,31 @@ export function AdminPage() {
             </div>
           </div>
 
-          <div className="card p-6">
-            <h2 className="font-semibold mb-4">Recent Sellers</h2>
-            {sellers.slice(0, 5).map((seller) => (
-              <div key={seller.id} className="flex items-center justify-between py-3 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
-                <div className="flex items-center gap-3 min-w-0">
-                  <Link to={`/seller/${seller.slug}`} className="text-sm font-medium hover:text-primary-600 truncate">
-                    {seller.business_name}
-                  </Link>
-                  <VerificationBadge tier={seller.verification_tier} />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="card p-6">
+              <h2 className="font-semibold mb-4">Paying Sellers</h2>
+              {payingSellers.map((seller) => (
+                <div key={seller.id} className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                  <Link to={`/seller/${seller.slug}`} className="text-sm font-medium hover:text-primary-600 truncate">{seller.business_name}</Link>
+                  <div className="flex items-center gap-2">
+                    <VerificationBadge tier={seller.verification_tier} />
+                    <button onClick={() => openEmailComposer(seller.email || '')} className="btn-ghost p-1" title="Email">
+                      <Mail className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <span className="text-xs text-neutral-400">{timeAgo(seller.created_at)}</span>
-              </div>
-            ))}
+              ))}
+              {payingSellers.length === 0 && <p className="text-sm text-neutral-400 py-4">No paying sellers</p>}
+            </div>
+            <div className="card p-6">
+              <h2 className="font-semibold mb-4">Recent Sellers</h2>
+              {sellers.slice(0, 5).map((seller) => (
+                <div key={seller.id} className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                  <Link to={`/seller/${seller.slug}`} className="text-sm font-medium hover:text-primary-600 truncate">{seller.business_name}</Link>
+                  <span className="text-xs text-neutral-400">{timeAgo(seller.created_at)}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -245,31 +429,33 @@ export function AdminPage() {
       {activeTab === 'sellers' && (
         <div className="space-y-3">
           {sellers.map((seller) => (
-            <div key={seller.id} className="card p-4 flex items-center gap-4 flex-wrap">
-              <Link to={`/seller/${seller.slug}`} className="flex items-center gap-3 flex-1 min-w-0">
-                <div className="w-10 h-10 rounded-full bg-neutral-200 dark:bg-neutral-700 overflow-hidden flex-shrink-0">
-                  {seller.logo_url ? <img src={seller.logo_url} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-sm font-semibold text-neutral-400">{seller.business_name[0]}</div>}
-                </div>
-                <div className="min-w-0">
-                  <p className="font-medium text-sm truncate">{seller.business_name}</p>
-                  <p className="text-xs text-neutral-500">{seller.location} · {timeAgo(seller.joined_date)}</p>
-                </div>
-              </Link>
-              <VerificationBadge tier={seller.verification_tier} />
-              {seller.is_banned && <span className="badge bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400">Banned</span>}
-              <select
-                value={seller.verification_tier}
-                onChange={(e) => handleUpdateTier(seller, e.target.value)}
-                className="input text-sm w-auto"
-              >
-                <option value="unverified">Unverified</option>
-                <option value="verified">Verified</option>
-                <option value="silver">Silver</option>
-                <option value="gold">Gold</option>
-              </select>
-              <button onClick={() => handleBanSeller(seller)} className={`btn-ghost p-2 ${seller.is_banned ? 'text-primary-600' : 'text-error-600'}`} title={seller.is_banned ? 'Unban' : 'Ban'}>
-                {seller.is_banned ? <Check className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
-              </button>
+            <div key={seller.id} className="card p-4">
+              <div className="flex items-center gap-4 flex-wrap">
+                <Link to={`/seller/${seller.slug}`} className="flex items-center gap-3 flex-1 min-w-0">
+                  <div className="w-10 h-10 rounded-full bg-neutral-200 dark:bg-neutral-700 overflow-hidden flex-shrink-0">
+                    {seller.logo_url ? <img src={seller.logo_url} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-sm font-semibold text-neutral-400">{seller.business_name[0]}</div>}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-medium text-sm truncate">{seller.business_name}</p>
+                    <p className="text-xs text-neutral-500">{seller.location} · {timeAgo(seller.joined_date)}</p>
+                    {seller.email && <p className="text-xs text-neutral-400">{seller.email}</p>}
+                  </div>
+                </Link>
+                <VerificationBadge tier={seller.verification_tier} />
+                {seller.is_banned && <span className="badge bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400">Banned</span>}
+                <select value={seller.verification_tier} onChange={(e) => handleUpdateTier(seller, e.target.value)} className="input text-sm w-auto">
+                  <option value="unverified">Unverified</option>
+                  <option value="verified">Verified</option>
+                  <option value="silver">Silver</option>
+                  <option value="gold">Gold</option>
+                </select>
+                <button onClick={() => openEmailComposer(seller.email || '')} className="btn-ghost p-2" title="Email seller">
+                  <Mail className="w-4 h-4" />
+                </button>
+                <button onClick={() => handleBanSeller(seller)} className={`btn-ghost p-2 ${seller.is_banned ? 'text-primary-600' : 'text-error-600'}`} title={seller.is_banned ? 'Unban' : 'Ban'}>
+                  {seller.is_banned ? <Check className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -287,10 +473,7 @@ export function AdminPage() {
                 <p className="font-medium text-sm truncate">{listing.title}</p>
                 <p className="text-xs text-neutral-500">{formatPrice(listing.price)} · {listing.seller?.business_name}</p>
               </Link>
-              <span className={`badge ${
-                listing.status === 'active' ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' :
-                'bg-neutral-100 text-neutral-500'
-              }`}>{listing.status}</span>
+              <span className={`badge ${listing.status === 'active' ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' : 'bg-neutral-100 text-neutral-500'}`}>{listing.status}</span>
               <button onClick={() => handleDeleteListing(listing.id)} className="btn-ghost p-2 text-error-600">
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -321,19 +504,54 @@ export function AdminPage() {
                   <p className="text-xs text-neutral-400 mt-2">{timeAgo(report.created_at)}</p>
                 </div>
                 <div className="flex flex-col items-end gap-2">
-                  <span className={`badge ${
-                    report.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
-                    'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
-                  }`}>{report.status}</span>
+                  <span className={`badge ${report.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'}`}>{report.status}</span>
                   {report.status === 'pending' && (
                     <div className="flex gap-1">
-                      <button onClick={() => handleResolveReport(report.id, 'resolved')} className="btn-ghost p-1.5 text-primary-600" title="Resolve">
-                        <Check className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => handleResolveReport(report.id, 'dismissed')} className="btn-ghost p-1.5" title="Dismiss">
-                        <AlertCircle className="w-4 h-4" />
-                      </button>
+                      <button onClick={() => handleResolveReport(report.id, 'resolved')} className="btn-ghost p-1.5 text-primary-600" title="Resolve"><Check className="w-4 h-4" /></button>
+                      <button onClick={() => handleResolveReport(report.id, 'dismissed')} className="btn-ghost p-1.5" title="Dismiss"><AlertCircle className="w-4 h-4" /></button>
                     </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Support Tickets */}
+      {activeTab === 'tickets' && (
+        <div className="space-y-3">
+          {tickets.length === 0 ? (
+            <div className="card p-12 text-center">
+              <Headphones className="w-12 h-12 text-neutral-300 mx-auto mb-3" />
+              <p className="text-neutral-500 dark:text-neutral-400">No support tickets</p>
+            </div>
+          ) : tickets.map((ticket) => (
+            <div key={ticket.id} className="card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Ticket className="w-4 h-4 text-primary-600" />
+                    <p className="font-medium text-sm">{ticket.subject}</p>
+                  </div>
+                  <p className="text-sm text-neutral-600 dark:text-neutral-400">{ticket.message}</p>
+                  <div className="flex items-center gap-3 mt-2 text-xs text-neutral-400">
+                    <span>From: {ticket.requester_name || ticket.requester_email || 'Anonymous'}</span>
+                    <span>{timeAgo(ticket.created_at)}</span>
+                    <span className={`badge ${ticket.priority === 'urgent' ? 'bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400' : ticket.priority === 'high' ? 'bg-amber-100 text-amber-700' : 'bg-neutral-100 text-neutral-500'}`}>{ticket.priority}</span>
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-2">
+                  <select value={ticket.status} onChange={(e) => handleUpdateTicketStatus(ticket.id, e.target.value)} className="input text-sm w-auto">
+                    <option value="open">Open</option>
+                    <option value="in_progress">In Progress</option>
+                    <option value="resolved">Resolved</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                  {ticket.requester_email && (
+                    <button onClick={() => openEmailComposer(ticket.requester_email || '')} className="btn-ghost p-1.5" title="Reply via email">
+                      <Mail className="w-4 h-4" />
+                    </button>
                   )}
                 </div>
               </div>
@@ -359,14 +577,163 @@ export function AdminPage() {
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-neutral-400">{formatDateTime(payment.created_at)}</span>
-                <span className={`badge ${
-                  payment.status === 'success' ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' :
-                  payment.status === 'failed' ? 'bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400' :
-                  'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-                }`}>{payment.status}</span>
+                <span className={`badge ${payment.status === 'success' ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' : payment.status === 'failed' ? 'bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>{payment.status}</span>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Discounts */}
+      {activeTab === 'discounts' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button onClick={() => setShowAddDiscount(true)} className="btn-primary">
+              <Plus className="w-4 h-4" />
+              Create Discount
+            </button>
+          </div>
+          {discounts.length === 0 ? (
+            <div className="card p-12 text-center">
+              <Tag className="w-12 h-12 text-neutral-300 mx-auto mb-3" />
+              <p className="text-neutral-500 dark:text-neutral-400">No discount codes yet</p>
+            </div>
+          ) : discounts.map((d) => (
+            <div key={d.id} className="card p-4 flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="font-bold text-sm font-mono">{d.code}</p>
+                  <span className={`badge ${d.is_active ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' : 'bg-neutral-100 text-neutral-500'}`}>{d.is_active ? 'Active' : 'Inactive'}</span>
+                </div>
+                <p className="text-xs text-neutral-500 mt-1">
+                  {d.discount_type === 'percentage' ? `${d.discount_value}% off` : `${formatPrice(d.discount_value)} off`}
+                  {d.description && ` · ${d.description}`}
+                  {d.valid_until && ` · Expires ${formatDate(d.valid_until)}`}
+                </p>
+                <p className="text-xs text-neutral-400 mt-0.5">Used {d.uses_count} times {d.max_uses ? `of ${d.max_uses}` : ''}</p>
+              </div>
+              <button onClick={() => handleToggleDiscount(d)} className="btn-ghost p-2" title={d.is_active ? 'Deactivate' : 'Activate'}>
+                {d.is_active ? <Ban className="w-4 h-4" /> : <Check className="w-4 h-4" />}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Email Composer */}
+      {activeTab === 'email' && (
+        <div className="max-w-2xl mx-auto">
+          <div className="card p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Mail className="w-5 h-5 text-primary-600" />
+              <h2 className="font-semibold">Send Email to Seller</h2>
+            </div>
+            <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
+              Compose an email to any seller. This connects to your SMTP server to send messages directly.
+            </p>
+            <form onSubmit={handleSendEmail} className="space-y-4">
+              <div>
+                <label className="label">To</label>
+                <input required type="email" value={emailForm.to} onChange={(e) => setEmailForm({ ...emailForm, to: e.target.value })} className="input" placeholder="seller@example.com" />
+              </div>
+              <div>
+                <label className="label">Subject</label>
+                <input required type="text" value={emailForm.subject} onChange={(e) => setEmailForm({ ...emailForm, subject: e.target.value })} className="input" placeholder="Email subject" />
+              </div>
+              <div>
+                <label className="label">Message</label>
+                <textarea required value={emailForm.body} onChange={(e) => setEmailForm({ ...emailForm, body: e.target.value })} className="input min-h-[200px]" placeholder="Type your message..." />
+              </div>
+              <button type="submit" disabled={emailSent} className="btn-primary w-full">
+                {emailSent ? (
+                  <><Check className="w-4 h-4" /> Sent!</>
+                ) : (
+                  <><Send className="w-4 h-4" /> Send Email</>
+                )}
+              </button>
+            </form>
+            <p className="text-xs text-neutral-400 mt-4">
+              Quick select: Pick a seller from the Sellers tab and click the email icon to pre-fill the address.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {sellers.filter(s => s.email).slice(0, 8).map(s => (
+                <button key={s.id} onClick={() => setEmailForm({ to: s.email || '', subject: '', body: '' })} className="btn-outline text-xs">
+                  {s.business_name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Roles & Permissions (Super Admin only) */}
+      {activeTab === 'roles' && isSuperAdmin && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button onClick={() => setShowCreateRole(true)} className="btn-primary">
+              <Plus className="w-4 h-4" />
+              Create Role
+            </button>
+          </div>
+
+          <div className="card p-4 bg-primary-50 dark:bg-primary-900/20 border-primary-200 dark:border-primary-800">
+            <div className="flex items-start gap-3">
+              <Crown className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium text-sm text-primary-800 dark:text-primary-400">Super Admin Protection</p>
+                <p className="text-xs text-primary-700 dark:text-primary-500 mt-1">
+                  The Super Admin role has all permissions and cannot be deleted or demoted. The first Super Admin is set via the VITE_SUPER_ADMIN_EMAIL environment variable.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {roles.map((role) => {
+            const isExpanded = expandedRole === role.id;
+            const perms = rolePerms[role.id] || [];
+            return (
+              <div key={role.id} className="card p-4">
+                <div className="flex items-center justify-between">
+                  <button onClick={() => setExpandedRole(isExpanded ? null : role.id)} className="flex items-center gap-3 flex-1 text-left">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-sm">{role.display_name}</p>
+                        {role.is_system && <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">System</span>}
+                      </div>
+                      <p className="text-xs text-neutral-500 mt-0.5">{role.description}</p>
+                      <p className="text-xs text-neutral-400 mt-0.5">{perms.length} permissions</p>
+                    </div>
+                  </button>
+                </div>
+                {isExpanded && (
+                  <div className="mt-4 pt-4 border-t border-neutral-100 dark:border-neutral-800">
+                    <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-3">Permissions</p>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                      {allPermissions.map((perm) => {
+                        const has = perms.includes(perm.id);
+                        const canToggle = role.name !== 'super_admin';
+                        return (
+                          <button
+                            key={perm.id}
+                            disabled={!canToggle}
+                            onClick={() => handleTogglePermission(role.id, perm.id)}
+                            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all ${
+                              has
+                                ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 border border-primary-200 dark:border-primary-800'
+                                : 'bg-neutral-50 dark:bg-neutral-800 text-neutral-500 border border-neutral-200 dark:border-neutral-700'
+                            } ${canToggle ? 'hover:opacity-80 cursor-pointer' : 'cursor-default opacity-60'}`}
+                          >
+                            {has ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                            {perm.display_name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -392,6 +759,70 @@ export function AdminPage() {
               <span className="text-xs text-neutral-400">{formatDateTime(log.created_at)}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Add Discount Modal */}
+      {showAddDiscount && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setShowAddDiscount(false)}>
+          <div className="bg-white dark:bg-neutral-900 rounded-xl max-w-md w-full p-6 animate-scale-in" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Create Discount Code</h2>
+              <button onClick={() => setShowAddDiscount(false)} className="btn-ghost p-1"><X className="w-5 h-5" /></button>
+            </div>
+            <form onSubmit={handleCreateDiscount} className="space-y-4">
+              <div>
+                <label className="label">Code *</label>
+                <input required type="text" value={discountForm.code} onChange={(e) => setDiscountForm({ ...discountForm, code: e.target.value })} className="input font-mono" placeholder="SAVE20" />
+              </div>
+              <div>
+                <label className="label">Description</label>
+                <input type="text" value={discountForm.description} onChange={(e) => setDiscountForm({ ...discountForm, description: e.target.value })} className="input" placeholder="20% off for first-time buyers" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">Type</label>
+                  <select value={discountForm.discount_type} onChange={(e) => setDiscountForm({ ...discountForm, discount_type: e.target.value })} className="input">
+                    <option value="percentage">Percentage</option>
+                    <option value="fixed">Fixed Amount</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Value *</label>
+                  <input required type="number" min={0} value={discountForm.discount_value} onChange={(e) => setDiscountForm({ ...discountForm, discount_value: e.target.value })} className="input" placeholder="20" />
+                </div>
+              </div>
+              <div>
+                <label className="label">Valid Until (optional)</label>
+                <input type="date" value={discountForm.valid_until} onChange={(e) => setDiscountForm({ ...discountForm, valid_until: e.target.value })} className="input" />
+              </div>
+              <button type="submit" className="btn-primary w-full">Create Discount</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Create Role Modal */}
+      {showCreateRole && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setShowCreateRole(false)}>
+          <div className="bg-white dark:bg-neutral-900 rounded-xl max-w-md w-full p-6 animate-scale-in" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Create Custom Role</h2>
+              <button onClick={() => setShowCreateRole(false)} className="btn-ghost p-1"><X className="w-5 h-5" /></button>
+            </div>
+            <form onSubmit={handleCreateRole} className="space-y-4">
+              <div>
+                <label className="label">Role Name *</label>
+                <input required type="text" value={roleForm.display_name} onChange={(e) => setRoleForm({ ...roleForm, display_name: e.target.value, name: e.target.value })} className="input" placeholder="e.g. Content Reviewer" />
+              </div>
+              <div>
+                <label className="label">Description</label>
+                <input type="text" value={roleForm.description} onChange={(e) => setRoleForm({ ...roleForm, description: e.target.value })} className="input" placeholder="Reviews and approves listings" />
+              </div>
+              <p className="text-xs text-neutral-400">After creating the role, expand it to toggle permissions on/off.</p>
+              <button type="submit" className="btn-primary w-full">Create Role</button>
+            </form>
+          </div>
         </div>
       )}
     </div>

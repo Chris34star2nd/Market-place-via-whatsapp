@@ -148,3 +148,54 @@ export interface SavedItem {
   created_at: string;
   listing?: Listing;
 }
+
+export interface SupportTicket {
+  id: string;
+  subject: string;
+  message: string;
+  requester_email: string | null;
+  requester_name: string | null;
+  seller_id: string | null;
+  status: 'open' | 'in_progress' | 'resolved' | 'closed';
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  assigned_to: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TicketReply {
+  id: string;
+  ticket_id: string;
+  replier_email: string | null;
+  message: string;
+  is_staff: boolean;
+  created_at: string;
+}
+
+export interface DiscountCode {
+  id: string;
+  code: string;
+  description: string | null;
+  discount_type: 'percentage' | 'fixed';
+  discount_value: number;
+  seller_id: string | null;
+  max_uses: number | null;
+  uses_count: number;
+  valid_from: string;
+  valid_until: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface RolePermission {
+  role_id: string;
+  permission_id: string;
+}
+
+export interface UserRole {
+  user_id: string;
+  role_id: string;
+  assigned_by: string | null;
+  created_at: string;
+}

@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Store, AlertCircle, Loader2 } from 'lucide-react';
+import { Store, AlertCircle, Loader2, ShieldCheck } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { SITE_CONFIG } from '@/config';
+
+const ALLOW_UNVERIFIED = import.meta.env.VITE_ALLOW_UNVERIFIED_EMAILS === 'true';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -12,6 +14,11 @@ export function LoginPage() {
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setError(null);
+
+    if (ALLOW_UNVERIFIED) {
+      await supabase.auth.updateUser({ data: { email_verified: true } });
+    }
+
     const { error: signInError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -37,6 +44,15 @@ export function LoginPage() {
               Sellers sign in with Google to manage listings and orders.
             </p>
           </div>
+
+          {ALLOW_UNVERIFIED && (
+            <div className="flex items-start gap-3 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-lg p-3 mb-4">
+              <ShieldCheck className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-primary-700 dark:text-primary-400">
+                Email verification is disabled. You will be signed in immediately after Google authentication.
+              </p>
+            </div>
+          )}
 
           {error && (
             <div className="flex items-start gap-3 bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-lg p-3 mb-4">
