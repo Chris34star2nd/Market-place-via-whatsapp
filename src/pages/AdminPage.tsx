@@ -3,18 +3,26 @@ import { Link } from 'react-router-dom';
 import {
   Shield, Users, Package, Flag, DollarSign, BarChart3, ScrollText,
   AlertCircle, Trash2, Ban, Check, Crown, Lock,
-  Headphones, Ticket, Tag, Mail, Send, X, Plus, UserCog
+  Headphones, Ticket, Tag, Mail, Send, X, Plus, UserCog, UserPlus
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import type { Seller, Listing, Report, Payment, AuditLog, SupportTicket, DiscountCode, Role, Permission } from '@/types';
+import type { Seller, Listing, Report, Payment, AuditLog, SupportTicket, DiscountCode, Role, Permission, UserRole } from '@/types';
 import { formatPrice, formatDateTime, formatNumber, timeAgo, formatDate } from '@/lib/utils';
 import { VerificationBadge } from '@/components/VerificationBadge';
 
 type AdminTab = 'overview' | 'sellers' | 'listings' | 'reports' | 'payments' | 'tickets' | 'discounts' | 'roles' | 'audit' | 'email';
 
+interface AdminRoleAssignment {
+  id: string;
+  email: string;
+  role_id: string;
+  role: Role;
+  created_at: string;
+}
+
 export function AdminPage() {
-  const { adminSession, adminSignIn, adminSignOut, sessionReady } = useAuth();
+  const { adminSession, adminSignIn, adminSignOut, sessionReady, profile } = useAuth();
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [adminLoginForm, setAdminLoginForm] = useState({ email: '', password: '' });
   const [adminLoginError, setAdminLoginError] = useState<string | null>(null);
@@ -31,6 +39,7 @@ export function AdminPage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [allPermissions, setAllPermissions] = useState<Permission[]>([]);
   const [rolePerms, setRolePerms] = useState<Record<string, string[]>>({});
+  const [roleAssignments, setRoleAssignments] = useState<AdminRoleAssignment[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [showEmailComposer, setShowEmailComposer] = useState(false);
@@ -41,6 +50,13 @@ export function AdminPage() {
   const [showCreateRole, setShowCreateRole] = useState(false);
   const [roleForm, setRoleForm] = useState({ name: '', display_name: '', description: '' });
   const [expandedRole, setExpandedRole] = useState<string | null>(null);
+  const [showAssignRole, setShowAssignRole] = useState(false);
+  const [assignForm, setAssignForm] = useState({ email: '', role_id: '' });
+
+  const isSuperAdmin = profile?.is_super_admin ?? false;
+  const adminPermissions: string[] = profile?.admin_permissions ?? [];
+
+  const hasPermission = (perm: string) => isSuperAdmin || adminPermissions.includes(perm);
 
   const fetchData = useCallback(async () => {
     const [sellersRes, listingsRes, reportsRes, paymentsRes, auditRes, ticketsRes, discountsRes, rolesRes, permsRes] = await Promise.all([
@@ -65,7 +81,6 @@ export function AdminPage() {
     setRoles(rolesRes.data || []);
     setAllPermissions(permsRes.data || []);
 
-    // Load role-permission mappings
     const { data: rpData } = await supabase.from('role_permissions').select('role_id, permission_id');
     const rpMap: Record<string, string[]> = {};
     (rpData || []).forEach((rp) => {
@@ -73,6 +88,23 @@ export function AdminPage() {
       rpMap[rp.role_id].push(rp.permission_id);
     });
     setRolePerms(rpMap);
+
+    const { data: urData } = await supabase
+      .from('user_roles')
+      .select('email, role_id, created_at, role:roles(*)')
+      .not('email', 'is', null);
+    const assignments: AdminRoleAssignment[] = (urData || []).map((ur) => {
+      const row = ur as Record<string, unknown>;
+      return {
+        id: `${row.email}_${row.role_id}`,
+        email: row.email as string,
+        role_id: row.role_id as string,
+        role: row.role as Role,
+        created_at: row.created_at as string,
+      };
+    });
+    setRoleAssignments(assignments);
+
     setLoading(false);
   }, []);
 
@@ -215,6 +247,38 @@ export function AdminPage() {
     fetchData();
   };
 
+  const handleAssignRole = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setActionError(null);
+    const email = assignForm.email.trim().toLowerCase();
+    const { error } = await supabase.from('user_roles').insert({
+      email,
+      role_id: assignForm.role_id,
+    });
+    if (error) {
+      if (error.code === '23505') {
+        setActionError('This email already has that role assigned.');
+      } else {
+        setActionError(error.message);
+      }
+      return;
+    }
+    await logAction('assign_role', 'user_role', email);
+    setShowAssignRole(false);
+    setAssignForm({ email: '', role_id: '' });
+    setActionSuccess(`Role assigned to ${email}. They will see the admin panel when they sign in.`);
+    fetchData();
+  };
+
+  const handleRemoveAssignment = async (email: string, roleId: string) => {
+    setActionError(null);
+    const { error } = await supabase.from('user_roles').delete().eq('email', email).eq('role_id', roleId);
+    if (error) { setActionError(error.message); return; }
+    await logAction('remove_role', 'user_role', email);
+    setActionSuccess('Role removed');
+    fetchData();
+  };
+
   const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
     setEmailSent(true);
@@ -230,8 +294,28 @@ export function AdminPage() {
     setShowEmailComposer(true);
   };
 
-  // Admin login gate — show email+password form if not logged in as admin
-  if (!adminSession && sessionReady) {
+  // Admin login gate — show email+password form if not logged in or not an admin
+  if (sessionReady && (!adminSession || (!profile?.is_admin && !profile?.is_super_admin))) {
+    if (adminSession && profile && !profile.is_admin && !profile.is_super_admin) {
+      return (
+        <div className="min-h-[60vh] flex items-center justify-center px-4 py-12">
+          <div className="max-w-md w-full">
+            <div className="card p-8 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-error-100 dark:bg-error-900/30 flex items-center justify-center mx-auto mb-4">
+                <Lock className="w-7 h-7 text-error-600" />
+              </div>
+              <h1 className="text-2xl font-bold mb-2">Access Denied</h1>
+              <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-6">
+                Your account does not have admin access. Only invited admins can access this panel.
+              </p>
+              <button onClick={() => adminSignOut()} className="btn-outline w-full mb-3">Sign Out</button>
+              <Link to="/" className="text-sm text-neutral-400 hover:text-primary-600">Back to SokoHub</Link>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-[70vh] flex items-center justify-center px-4 py-12">
         <div className="max-w-md w-full">
@@ -292,7 +376,7 @@ export function AdminPage() {
     );
   }
 
-  if (loading) {
+  if (loading || !profile) {
     return (
       <div className="container-app py-6">
         <div className="skeleton h-8 w-48 mb-6" />
@@ -307,20 +391,30 @@ export function AdminPage() {
   const pendingReports = reports.filter((r) => r.status === 'pending');
   const openTickets = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress');
   const payingSellers = sellers.filter((s) => s.verification_tier !== 'unverified');
-  const isSuperAdmin = true;
 
-  const TABS: { key: AdminTab; label: string; icon: typeof Shield; superOnly?: boolean }[] = [
+  const TABS: { key: AdminTab; label: string; icon: typeof Shield; perm?: string; superOnly?: boolean }[] = [
     { key: 'overview', label: 'Overview', icon: BarChart3 },
-    { key: 'sellers', label: 'Sellers', icon: Users },
-    { key: 'listings', label: 'Listings', icon: Package },
-    { key: 'reports', label: 'Reports', icon: Flag },
-    { key: 'tickets', label: 'Support', icon: Headphones },
-    { key: 'payments', label: 'Payments', icon: DollarSign },
-    { key: 'discounts', label: 'Discounts', icon: Tag },
-    { key: 'email', label: 'Send Email', icon: Mail },
+    { key: 'sellers', label: 'Sellers', icon: Users, perm: 'manage_users' },
+    { key: 'listings', label: 'Listings', icon: Package, perm: 'manage_listings' },
+    { key: 'reports', label: 'Reports', icon: Flag, perm: 'manage_listings' },
+    { key: 'tickets', label: 'Support', icon: Headphones, perm: 'respond_tickets' },
+    { key: 'payments', label: 'Payments', icon: DollarSign, perm: 'view_revenue' },
+    { key: 'discounts', label: 'Discounts', icon: Tag, perm: 'manage_discounts' },
+    { key: 'email', label: 'Send Email', icon: Mail, perm: 'send_emails' },
     { key: 'roles', label: 'Roles', icon: UserCog, superOnly: true },
-    { key: 'audit', label: 'Audit Log', icon: ScrollText },
+    { key: 'audit', label: 'Audit Log', icon: ScrollText, perm: 'view_audit' },
   ];
+
+  const visibleTabs = TABS.filter(t => {
+    if (t.superOnly) return isSuperAdmin;
+    if (t.perm) return hasPermission(t.perm);
+    return true;
+  });
+
+  // If current tab is not visible to this user, reset to overview
+  if (!visibleTabs.some(t => t.key === activeTab)) {
+    setActiveTab('overview');
+  }
 
   return (
     <div className="container-app py-6">
@@ -332,7 +426,7 @@ export function AdminPage() {
         <div>
           <h1 className="text-2xl font-bold">Admin Panel</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            Super Admin · {adminSession?.email}
+            {isSuperAdmin ? 'Super Admin' : profile.admin_roles?.map(r => r.role.display_name).join(', ') || 'Admin'} · {adminSession?.email}
           </p>
         </div>
         </div>
@@ -393,7 +487,7 @@ export function AdminPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 overflow-x-auto">
-        {TABS.filter(t => !t.superOnly || isSuperAdmin).map((tab) => {
+        {visibleTabs.map((tab) => {
           const Icon = tab.icon;
           return (
             <button
@@ -454,9 +548,11 @@ export function AdminPage() {
                   <Link to={`/seller/${seller.slug}`} className="text-sm font-medium hover:text-primary-600 truncate">{seller.business_name}</Link>
                   <div className="flex items-center gap-2">
                     <VerificationBadge tier={seller.verification_tier} />
-                    <button onClick={() => openEmailComposer(seller.email || '')} className="btn-ghost p-1" title="Email">
-                      <Mail className="w-3.5 h-3.5" />
-                    </button>
+                    {hasPermission('send_emails') && (
+                      <button onClick={() => openEmailComposer(seller.email || '')} className="btn-ghost p-1" title="Email">
+                        <Mail className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -476,7 +572,7 @@ export function AdminPage() {
       )}
 
       {/* Sellers */}
-      {activeTab === 'sellers' && (
+      {activeTab === 'sellers' && hasPermission('manage_users') && (
         <div className="space-y-3">
           {sellers.map((seller) => (
             <div key={seller.id} className="card p-4">
@@ -493,18 +589,24 @@ export function AdminPage() {
                 </Link>
                 <VerificationBadge tier={seller.verification_tier} />
                 {seller.is_banned && <span className="badge bg-error-100 text-error-700 dark:bg-error-900/30 dark:text-error-400">Banned</span>}
-                <select value={seller.verification_tier} onChange={(e) => handleUpdateTier(seller, e.target.value)} className="input text-sm w-auto">
-                  <option value="unverified">Unverified</option>
-                  <option value="verified">Verified</option>
-                  <option value="silver">Silver</option>
-                  <option value="gold">Gold</option>
-                </select>
-                <button onClick={() => openEmailComposer(seller.email || '')} className="btn-ghost p-2" title="Email seller">
-                  <Mail className="w-4 h-4" />
-                </button>
-                <button onClick={() => handleBanSeller(seller)} className={`btn-ghost p-2 ${seller.is_banned ? 'text-primary-600' : 'text-error-600'}`} title={seller.is_banned ? 'Unban' : 'Ban'}>
-                  {seller.is_banned ? <Check className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
-                </button>
+                {hasPermission('change_tiers') && (
+                  <select value={seller.verification_tier} onChange={(e) => handleUpdateTier(seller, e.target.value)} className="input text-sm w-auto">
+                    <option value="unverified">Unverified</option>
+                    <option value="verified">Verified</option>
+                    <option value="silver">Silver</option>
+                    <option value="gold">Gold</option>
+                  </select>
+                )}
+                {hasPermission('send_emails') && (
+                  <button onClick={() => openEmailComposer(seller.email || '')} className="btn-ghost p-2" title="Email seller">
+                    <Mail className="w-4 h-4" />
+                  </button>
+                )}
+                {hasPermission('ban_sellers') && (
+                  <button onClick={() => handleBanSeller(seller)} className={`btn-ghost p-2 ${seller.is_banned ? 'text-primary-600' : 'text-error-600'}`} title={seller.is_banned ? 'Unban' : 'Ban'}>
+                    {seller.is_banned ? <Check className="w-4 h-4" /> : <Ban className="w-4 h-4" />}
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -512,7 +614,7 @@ export function AdminPage() {
       )}
 
       {/* Listings */}
-      {activeTab === 'listings' && (
+      {activeTab === 'listings' && hasPermission('manage_listings') && (
         <div className="space-y-3">
           {listings.map((listing) => (
             <div key={listing.id} className="card p-4 flex items-center gap-4">
@@ -533,7 +635,7 @@ export function AdminPage() {
       )}
 
       {/* Reports */}
-      {activeTab === 'reports' && (
+      {activeTab === 'reports' && hasPermission('manage_listings') && (
         <div className="space-y-3">
           {reports.length === 0 ? (
             <div className="card p-12 text-center">
@@ -569,7 +671,7 @@ export function AdminPage() {
       )}
 
       {/* Support Tickets */}
-      {activeTab === 'tickets' && (
+      {activeTab === 'tickets' && hasPermission('respond_tickets') && (
         <div className="space-y-3">
           {tickets.length === 0 ? (
             <div className="card p-12 text-center">
@@ -598,7 +700,7 @@ export function AdminPage() {
                     <option value="resolved">Resolved</option>
                     <option value="closed">Closed</option>
                   </select>
-                  {ticket.requester_email && (
+                  {ticket.requester_email && hasPermission('send_emails') && (
                     <button onClick={() => openEmailComposer(ticket.requester_email || '')} className="btn-ghost p-1.5" title="Reply via email">
                       <Mail className="w-4 h-4" />
                     </button>
@@ -611,7 +713,7 @@ export function AdminPage() {
       )}
 
       {/* Payments */}
-      {activeTab === 'payments' && (
+      {activeTab === 'payments' && hasPermission('view_revenue') && (
         <div className="space-y-3">
           {payments.length === 0 ? (
             <div className="card p-12 text-center">
@@ -635,7 +737,7 @@ export function AdminPage() {
       )}
 
       {/* Discounts */}
-      {activeTab === 'discounts' && (
+      {activeTab === 'discounts' && hasPermission('manage_discounts') && (
         <div className="space-y-4">
           <div className="flex justify-end">
             <button onClick={() => setShowAddDiscount(true)} className="btn-primary">
@@ -671,7 +773,7 @@ export function AdminPage() {
       )}
 
       {/* Email Composer */}
-      {activeTab === 'email' && (
+      {activeTab === 'email' && hasPermission('send_emails') && (
         <div className="max-w-2xl mx-auto">
           <div className="card p-6">
             <div className="flex items-center gap-2 mb-4">
@@ -719,8 +821,12 @@ export function AdminPage() {
       {/* Roles & Permissions (Super Admin only) */}
       {activeTab === 'roles' && isSuperAdmin && (
         <div className="space-y-4">
-          <div className="flex justify-end">
-            <button onClick={() => setShowCreateRole(true)} className="btn-primary">
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setShowAssignRole(true)} className="btn-primary">
+              <UserPlus className="w-4 h-4" />
+              Assign Role to Email
+            </button>
+            <button onClick={() => setShowCreateRole(true)} className="btn-outline">
               <Plus className="w-4 h-4" />
               Create Role
             </button>
@@ -730,17 +836,47 @@ export function AdminPage() {
             <div className="flex items-start gap-3">
               <Crown className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
               <div>
-                <p className="font-medium text-sm text-primary-800 dark:text-primary-400">Super Admin Protection</p>
+                <p className="font-medium text-sm text-primary-800 dark:text-primary-400">How Role Assignment Works</p>
                 <p className="text-xs text-primary-700 dark:text-primary-500 mt-1">
-                  The Super Admin role has all permissions and cannot be deleted or demoted.
+                  Enter an email and assign a role. When that person signs in with Google using the same email, they will see the admin panel with only the tabs their role permits. Businesses without an assigned role will never see the admin panel.
                 </p>
               </div>
             </div>
           </div>
 
+          {/* Assigned Admins */}
+          {roleAssignments.length > 0 && (
+            <div className="card p-4">
+              <h3 className="font-semibold text-sm mb-3">Assigned Admins</h3>
+              <div className="space-y-2">
+                {roleAssignments.map((a) => (
+                  <div key={a.id} className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center flex-shrink-0">
+                        <UserCog className="w-4 h-4 text-primary-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">{a.email}</p>
+                        <p className="text-xs text-neutral-500">{a.role.display_name}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveAssignment(a.email, a.role_id)}
+                      className="btn-ghost p-2 text-error-600"
+                      title="Remove role"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {roles.map((role) => {
             const isExpanded = expandedRole === role.id;
             const perms = rolePerms[role.id] || [];
+            const assignedEmails = roleAssignments.filter(a => a.role_id === role.id);
             return (
               <div key={role.id} className="card p-4">
                 <div className="flex items-center justify-between">
@@ -751,34 +887,48 @@ export function AdminPage() {
                         {role.is_system && <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">System</span>}
                       </div>
                       <p className="text-xs text-neutral-500 mt-0.5">{role.description}</p>
-                      <p className="text-xs text-neutral-400 mt-0.5">{perms.length} permissions</p>
+                      <p className="text-xs text-neutral-400 mt-0.5">{perms.length} permissions · {assignedEmails.length} assigned</p>
                     </div>
                   </button>
                 </div>
                 {isExpanded && (
-                  <div className="mt-4 pt-4 border-t border-neutral-100 dark:border-neutral-800">
-                    <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-3">Permissions</p>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                      {allPermissions.map((perm) => {
-                        const has = perms.includes(perm.id);
-                        const canToggle = role.name !== 'super_admin';
-                        return (
-                          <button
-                            key={perm.id}
-                            disabled={!canToggle}
-                            onClick={() => handleTogglePermission(role.id, perm.id)}
-                            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all ${
-                              has
-                                ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 border border-primary-200 dark:border-primary-800'
-                                : 'bg-neutral-50 dark:bg-neutral-800 text-neutral-500 border border-neutral-200 dark:border-neutral-700'
-                            } ${canToggle ? 'hover:opacity-80 cursor-pointer' : 'cursor-default opacity-60'}`}
-                          >
-                            {has ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
-                            {perm.display_name}
-                          </button>
-                        );
-                      })}
+                  <div className="mt-4 pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-4">
+                    <div>
+                      <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-3">Permissions</p>
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                        {allPermissions.map((perm) => {
+                          const has = perms.includes(perm.id);
+                          const canToggle = role.name !== 'super_admin';
+                          return (
+                            <button
+                              key={perm.id}
+                              disabled={!canToggle}
+                              onClick={() => handleTogglePermission(role.id, perm.id)}
+                              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all ${
+                                has
+                                  ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 border border-primary-200 dark:border-primary-800'
+                                  : 'bg-neutral-50 dark:bg-neutral-800 text-neutral-500 border border-neutral-200 dark:border-neutral-700'
+                              } ${canToggle ? 'hover:opacity-80 cursor-pointer' : 'cursor-default opacity-60'}`}
+                            >
+                              {has ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                              {perm.display_name}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
+                    {assignedEmails.length > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-2">Assigned to:</p>
+                        <div className="flex flex-wrap gap-2">
+                          {assignedEmails.map((a) => (
+                            <span key={a.id} className="badge bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 text-xs">
+                              {a.email}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -788,7 +938,7 @@ export function AdminPage() {
       )}
 
       {/* Audit Log */}
-      {activeTab === 'audit' && (
+      {activeTab === 'audit' && hasPermission('view_audit') && (
         <div className="space-y-2">
           {auditLogs.length === 0 ? (
             <div className="card p-12 text-center">
@@ -871,6 +1021,35 @@ export function AdminPage() {
               </div>
               <p className="text-xs text-neutral-400">After creating the role, expand it to toggle permissions on/off.</p>
               <button type="submit" className="btn-primary w-full">Create Role</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Assign Role Modal */}
+      {showAssignRole && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setShowAssignRole(false)}>
+          <div className="bg-white dark:bg-neutral-900 rounded-xl max-w-md w-full p-6 animate-scale-in" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Assign Role to Email</h2>
+              <button onClick={() => setShowAssignRole(false)} className="btn-ghost p-1"><X className="w-5 h-5" /></button>
+            </div>
+            <form onSubmit={handleAssignRole} className="space-y-4">
+              <div>
+                <label className="label">Email Address *</label>
+                <input required type="email" value={assignForm.email} onChange={(e) => setAssignForm({ ...assignForm, email: e.target.value })} className="input" placeholder="person@example.com" />
+                <p className="text-xs text-neutral-400 mt-1">When this person signs in with Google using this email, they will see the admin panel.</p>
+              </div>
+              <div>
+                <label className="label">Role *</label>
+                <select required value={assignForm.role_id} onChange={(e) => setAssignForm({ ...assignForm, role_id: e.target.value })} className="input">
+                  <option value="">Select a role...</option>
+                  {roles.filter(r => r.name !== 'super_admin').map(r => (
+                    <option key={r.id} value={r.id}>{r.display_name}</option>
+                  ))}
+                </select>
+              </div>
+              <button type="submit" className="btn-primary w-full">Assign Role</button>
             </form>
           </div>
         </div>

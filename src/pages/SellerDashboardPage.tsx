@@ -73,9 +73,13 @@ export function SellerDashboardPage() {
         navigate('/login');
         return;
       }
+      if (profile?.is_admin && !profile?.is_seller) {
+        navigate('/admin');
+        return;
+      }
       fetchData();
     }
-  }, [authLoading, user, navigate, fetchData]);
+  }, [authLoading, user, profile, navigate, fetchData]);
 
   const activeListings = listings.filter((l) => l.status === 'active');
   const pausedListings = listings.filter((l) => l.status === 'paused');

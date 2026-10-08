@@ -111,7 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data: userRoles } = await supabase
         .from('user_roles')
         .select('role_id, role:roles(*), role_permissions!inner(permission_id, permission:permissions(*))')
-        .eq('user_id', session?.user?.id || '');
+        .eq('email', email);
 
       if (userRoles && userRoles.length > 0) {
         for (const ur of userRoles) {

@@ -194,8 +194,9 @@ export interface RolePermission {
 }
 
 export interface UserRole {
-  user_id: string;
+  user_id: string | null;
   role_id: string;
+  email: string | null;
   assigned_by: string | null;
   created_at: string;
 }
